@@ -96,8 +96,39 @@ export default function InventoryTable({ items }: { items: InventoryItem[] }) {
     );
 }
 
-export function LowStockAlerts({ items }: { items: InventoryItem[] }) {
-    const alertItems = (items || []).filter(i => i.status !== 'in-stock').sort((a, b) => a.stock - b.stock);
+interface LowStockAlertsProps {
+    items: InventoryItem[];
+    loading?: boolean;
+    limit?: number;
+}
+
+export function LowStockAlerts({ items, loading = false, limit = 6 }: LowStockAlertsProps) {
+    const alertItems = (items || [])
+        .filter(i => i.status !== 'in-stock')
+        .sort((a, b) => {
+            if (a.status !== b.status) {
+                if (a.status === 'out-of-stock') return -1;
+                if (b.status === 'out-of-stock') return 1;
+            }
+            return a.stock - b.stock;
+        });
+    const visibleAlerts = alertItems.slice(0, limit);
+
+    if (loading) {
+        return (
+            <div className="bg-[#111827]/80 backdrop-blur-sm border border-white/5 rounded-2xl p-6">
+                <div className="flex items-center gap-2 mb-4">
+                    <AlertTriangle size={18} className="text-amber-400" />
+                    <h3 className="text-white font-semibold text-lg">Stock Alerts</h3>
+                </div>
+                <div className="space-y-3">
+                    {Array.from({ length: 3 }).map((_, idx) => (
+                        <div key={idx} className="h-16 rounded-xl bg-white/5 border border-white/10 animate-pulse" />
+                    ))}
+                </div>
+            </div>
+        );
+    }
 
     if (alertItems.length === 0) {
         return (
@@ -122,9 +153,9 @@ export function LowStockAlerts({ items }: { items: InventoryItem[] }) {
             </div>
 
             <div className="space-y-3">
-                {alertItems.map(item => (
+                {visibleAlerts.map(item => (
                     <div
-                        key={item.sku}
+                        key={item.sku || item.asin}
                         className={`p-3 rounded-xl border transition-colors ${item.stock === 0
                                 ? 'bg-red-500/5 border-red-500/15 hover:border-red-500/30'
                                 : 'bg-amber-500/5 border-amber-500/15 hover:border-amber-500/30'
@@ -152,6 +183,12 @@ export function LowStockAlerts({ items }: { items: InventoryItem[] }) {
                     </div>
                 ))}
             </div>
+
+            {alertItems.length > visibleAlerts.length && (
+                <p className="mt-3 text-xs text-slate-500 text-right">
+                    Showing {visibleAlerts.length} of {alertItems.length} alerts
+                </p>
+            )}
         </div>
     );
 }

@@ -6,7 +6,7 @@ import KPICard, { KPICardSkeleton } from '@/components/cards/KPICard';
 import RevenueChart from '@/components/charts/RevenueChart';
 import { PlatformPieChart, OrderStatusChart } from '@/components/charts/PieCharts';
 import OrdersTable from '@/components/tables/OrdersTable';
-import InventoryTable, { LowStockAlerts } from '@/components/tables/InventoryTable';
+import { LowStockAlerts } from '@/components/tables/InventoryTable';
 import PerformanceMetrics from '@/components/cards/PerformanceMetrics';
 import { Activity, RefreshCw, AlertCircle, Calendar } from 'lucide-react';
 
@@ -21,16 +21,19 @@ const PERIODS = [
 export default function DashboardPage() {
   const [period, setPeriod] = useState('30d');
   const { data, loading, error, refresh } = useFetch<any>(`/api/dashboard?period=${period}`);
+  const { data: inventoryData, loading: inventoryLoading, refresh: refreshInventory } = useFetch<any>('/api/inventory?fulfillment=fbm');
   const [lastRefresh, setLastRefresh] = useState('');
 
   const handleRefresh = async () => {
-    await refresh();
+    await Promise.all([refresh(), refreshInventory()]);
     setLastRefresh(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }));
   };
 
   const handlePeriodChange = (p: string) => {
     setPeriod(p);
   };
+
+  const stockAlertItems = inventoryData?.items || [];
 
   return (
     <DashboardLayout>
@@ -128,7 +131,7 @@ export default function DashboardPage() {
                   returnedOrders: data.orderStatusData.find((d: any) => d.status === 'Returned')?.count || 0,
                 }}
               />
-              <LowStockAlerts items={data.inventoryItems} />
+              <LowStockAlerts items={stockAlertItems} loading={inventoryLoading} limit={6} />
             </div>
           </div>
         </>
