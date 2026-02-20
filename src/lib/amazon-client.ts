@@ -3,6 +3,7 @@
  * Uses token-based auth with auto-refresh — no AWS signing needed.
  */
 
+import { gunzipSync } from 'zlib';
 import { getCached, setCache, getStale, TTL } from './cache';
 
 let accessToken: string | null = null;
@@ -336,7 +337,7 @@ export interface FetchAllListingsOptions {
 }
 
 export async function fetchAllListings(options: FetchAllListingsOptions = {}): Promise<any[]> {
-    const cacheKey = 'all_listings_report';
+    const cacheKey = 'all_listings_report_v2';
     const cached = getCached<any[]>(cacheKey);
     if (cached) return cached;
 
@@ -385,7 +386,16 @@ export async function fetchAllListings(options: FetchAllListingsOptions = {}): P
     if (!downloadRes.ok) {
         throw new Error(`Report download failed: ${downloadRes.status}`);
     }
-    const tsvText = await downloadRes.text();
+    const compressed = String(docInfo?.compressionAlgorithm || '').toUpperCase() === 'GZIP';
+    const rawBuffer = Buffer.from(await downloadRes.arrayBuffer());
+    const hasGzipMagic = rawBuffer.length >= 2 && rawBuffer[0] === 0x1f && rawBuffer[1] === 0x8b;
+
+    let tsvText: string;
+    if (compressed || hasGzipMagic) {
+        tsvText = gunzipSync(rawBuffer).toString('utf-8');
+    } else {
+        tsvText = rawBuffer.toString('utf-8');
+    }
     const listings = parseTsv(tsvText);
 
     // 5. Cache for 24 hours
@@ -398,10 +408,20 @@ export async function fetchAllListings(options: FetchAllListingsOptions = {}): P
  * Parse TSV report data into array of objects
  */
 function parseTsv(tsv: string): any[] {
-    const lines = tsv.trim().split('\n');
+    const lines = tsv.trim().split(/\r?\n/);
     if (lines.length < 2) return [];
 
-    const headers = lines[0].split('\t').map(h => h.trim());
+    const headers = lines[0]
+        .split('\t')
+        .map(h => h.replace(/^\uFEFF/, '').trim());
+
+    const normalized = headers.map(h => h.toLowerCase());
+    const looksLikeListings = normalized.some(h => h.includes('seller-sku') || h === 'sku')
+        && normalized.some(h => h.includes('asin'));
+    if (!looksLikeListings) {
+        throw new Error('Listings report format is invalid or unreadable');
+    }
+
     const rows: any[] = [];
 
     for (let i = 1; i < lines.length; i++) {
