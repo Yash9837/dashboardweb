@@ -1,26 +1,134 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --bg-primary: #f8fafc;
+    --bg-secondary: #f1f5f9;
+    --bg-card: #ffffff;
+    --text-primary: #0f172a;
+    --text-muted: #475569;
+    --border-color: #e2e8f0;
+  }
+
+  html.dark {
+    --bg-primary: #080b14;
+    --bg-secondary: #0d1117;
+    --bg-card: #111827;
+    --text-primary: #e2e8f0;
+    --text-muted: #94a3b8;
+    --border-color: rgba(255, 255, 255, 0.08);
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Scrollbar Styles */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer utilities {
+  /* Core text tone remap for light surfaces */
+  html:not(.dark) .text-white {
+    color: #0f172a !important;
+  }
+  html:not(.dark) .text-slate-300 {
+    color: #334155 !important;
+  }
+  html:not(.dark) .text-slate-400 {
+    color: #475569 !important;
+  }
+  html:not(.dark) .text-slate-500 {
+    color: #64748b !important;
+  }
+  html:not(.dark) .text-slate-600 {
+    color: #94a3b8 !important;
+  }
+  html:not(.dark) .hover\:text-white:hover {
+    color: #0f172a !important;
+  }
+
+  /* Keep white text where it sits on saturated gradients */
+  html:not(.dark) .bg-gradient-to-br .text-white {
+    color: #ffffff !important;
+  }
+
+  /* Surface remap */
+  html:not(.dark) .bg-\[\#080b14\],
+  html:not(.dark) .bg-\[\#0a0e1a\],
+  html:not(.dark) .bg-\[\#111827\]\/80,
+  html:not(.dark) .bg-\[\#0d1117\]\/80,
+  html:not(.dark) .bg-\[\#1a2035\],
+  html:not(.dark) .bg-\[\#151b28\],
+  html:not(.dark) .bg-slate-800\/50 {
+    background-color: #ffffff !important;
+  }
+
+  html:not(.dark) .bg-white\/5 {
+    background-color: #f1f5f9 !important;
+  }
+  html:not(.dark) .bg-white\/10 {
+    background-color: #e2e8f0 !important;
+  }
+  html:not(.dark) .bg-white\/\[0\.02\],
+  html:not(.dark) .bg-white\/\[0\.01\] {
+    background-color: #f8fafc !important;
+  }
+
+  /* Border remap */
+  html:not(.dark) .border-white\/5,
+  html:not(.dark) .border-white\/10,
+  html:not(.dark) .border-white\/\[0\.03\] {
+    border-color: #e2e8f0 !important;
+  }
+
+  html:not(.dark) .hover\:border-white\/10:hover,
+  html:not(.dark) .hover\:border-white\/20:hover {
+    border-color: #cbd5e1 !important;
+  }
+
+  html:not(.dark) .hover\:bg-white\/5:hover,
+  html:not(.dark) .hover\:bg-white\/\[0\.02\]:hover {
+    background-color: #eef2ff !important;
+  }
+
+  html:not(.dark) .divide-white\/\[0\.03\] > :not([hidden]) ~ :not([hidden]) {
+    border-color: #e2e8f0 !important;
+  }
+}
+
+/* Recharts responsive fix */
+.recharts-responsive-container {
+  min-height: 0 !important;
 }

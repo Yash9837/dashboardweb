@@ -1,36 +1,83 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SmartCommerce Dashboard
 
-## Getting Started
+Next.js dashboard + API routes for Amazon SP-API analytics with Firebase Authentication.
 
-First, run the development server:
+## Local setup
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Create env file:
+
+```bash
+cp .env.example .env.local
+```
+
+3. Start development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Firebase auth
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Firebase auth is wired through:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `src/lib/firebase.ts`
+- `src/context/AuthContext.tsx`
+- `src/components/auth/AuthScreen.tsx`
 
-## Learn More
+Enable at least one sign-in provider in Firebase Console:
 
-To learn more about Next.js, take a look at the following resources:
+1. Open project `platform-dashboard-f3e9d`
+2. Go to `Authentication` -> `Sign-in method`
+3. Enable `Google` and/or `Email/Password`
+4. Add local and Vercel domains in `Authentication` -> `Settings` -> `Authorized domains`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Required environment variables
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Set these in `.env.local` and in Vercel Project Settings:
 
-## Deploy on Vercel
+- `NEXT_PUBLIC_FIREBASE_API_KEY`
+- `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`
+- `NEXT_PUBLIC_FIREBASE_PROJECT_ID`
+- `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`
+- `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`
+- `NEXT_PUBLIC_FIREBASE_APP_ID`
+- `NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID`
+- `LWA_CLIENT_ID`
+- `LWA_CLIENT_SECRET`
+- `LWA_REFRESH_TOKEN`
+- `SP_API_ENDPOINT`
+- `MARKETPLACE_ID`
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Recommended production variables (Vercel)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `DASHBOARD_TIMEZONE=Asia/Kolkata`
+- `CACHE_DIR=/tmp/smartcommerce-cache`
+- `SP_REPORT_MAX_WAIT_MS=35000`
+- `SP_REPORT_POLL_INTERVAL_MS=4000`
+- `SP_REPORT_DOWNLOAD_TIMEOUT_MS=20000`
+- `CATALOG_BATCH_CONCURRENCY=4`
+- `CATALOG_BATCH_DELAY_MS=100`
+- `CATALOG_BATCH_MAX_ASINS=150`
+- `ORDERS_ENRICH_LIMIT=75`
+- `ORDERS_ITEMS_CONCURRENCY=4`
+- `ORDERS_ITEMS_DELAY_MS=60`
+
+## Deploy to Vercel (production)
+
+1. Import the repo in Vercel.
+2. Set **Root Directory** to `apps/dashboard`.
+3. Keep framework as **Next.js**.
+4. Add all environment variables listed above.
+5. Deploy.
+
+Notes:
+
+- API routes are in `src/app/api/*` and run on Node.js runtime.
+- Function `maxDuration` is configured in API routes for production workloads.
+- App cache automatically uses `/tmp` on Vercel.
