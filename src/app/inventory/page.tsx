@@ -10,7 +10,7 @@ import { Package, Boxes, AlertTriangle, XCircle, ArrowUpDown, TrendingUp } from 
 
 export default function InventoryPage() {
     const [statusFilter, setStatusFilter] = useState('all');
-    const { data, loading, error, refresh } = useFetch<any>('/api/inventory');
+    const { data, loading, error, refresh } = useFetch<any>('/api/inventory?fulfillment=fbm');
 
     const items = data?.items || [];
     const stats = data?.stats || {};
@@ -40,8 +40,8 @@ export default function InventoryPage() {
     return (
         <DashboardLayout>
             <PageHeader
-                title="FBA Inventory"
-                subtitle="Monitor your Fulfillment by Amazon inventory levels"
+                title="FBM Inventory"
+                subtitle="Monitor your Fulfillment by Merchant inventory levels"
                 icon={Package}
                 iconColor="text-emerald-400"
                 loading={loading}
@@ -126,4 +126,3 @@ export default function InventoryPage() {
         </DashboardLayout>
     );
 }
-

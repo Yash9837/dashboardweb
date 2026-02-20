@@ -6,7 +6,8 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-const CACHE_KEY = 'inventory_all_products_v2';
+type FulfillmentFilter = 'fbm' | 'fba' | 'all';
+const CACHE_KEY_PREFIX = 'inventory_all_products_v3';
 
 interface InventoryProduct {
     sku: string;
@@ -44,6 +45,7 @@ interface InventoryStats {
 interface InventoryMeta {
     listingsCount: number;
     fbaCount: number;
+    fulfillment: FulfillmentFilter;
     partialData: boolean;
 }
 
@@ -75,19 +77,48 @@ function emptyPayload(): InventoryApiPayload {
         meta: {
             listingsCount: 0,
             fbaCount: 0,
+            fulfillment: 'fbm',
             partialData: false,
         },
         warnings: [],
     };
 }
 
+function resolveFulfillmentFilter(value: string | null): FulfillmentFilter {
+    const raw = String(value || '').toLowerCase();
+    if (raw === 'all' || raw === 'fba' || raw === 'fbm') return raw;
+    return 'fbm';
+}
+
+function normalizeFulfillmentChannel(channel: unknown, hasFbaData = false): 'FBA' | 'FBM' {
+    const raw = String(channel || '').toUpperCase().trim();
+    if (raw.includes('MERCHANT') || raw.includes('FBM') || raw === 'DEFAULT') return 'FBM';
+    if (raw.includes('FBA')) return 'FBA';
+    if (raw.includes('AMAZON')) return hasFbaData ? 'FBA' : 'FBM';
+    return hasFbaData ? 'FBA' : 'FBM';
+}
+
+function matchesFulfillment(channel: 'FBA' | 'FBM', filter: FulfillmentFilter): boolean {
+    if (filter === 'all') return true;
+    if (filter === 'fba') return channel === 'FBA';
+    return channel === 'FBM';
+}
+
+function toNumber(v: unknown): number {
+    if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+    const parsed = Number(String(v ?? '').replace(/[^0-9.-]/g, ''));
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const forceRefresh = searchParams.get('refresh') === 'true';
+    const fulfillment = resolveFulfillmentFilter(searchParams.get('fulfillment'));
+    const cacheKey = `${CACHE_KEY_PREFIX}_${fulfillment}`;
 
     try {
         if (!forceRefresh) {
-            const cached = getCached<InventoryApiPayload>(CACHE_KEY);
+            const cached = getCached<InventoryApiPayload>(cacheKey);
             if (cached) {
                 return NextResponse.json({
                     ...cached,
@@ -99,7 +130,7 @@ export async function GET(request: Request) {
 
         const status = await checkAmazonConnection();
         if (!status.connected) {
-            const stale = getStale<InventoryApiPayload>(CACHE_KEY);
+            const stale = getStale<InventoryApiPayload>(cacheKey);
             if (stale) {
                 return NextResponse.json({
                     ...stale,
@@ -114,6 +145,7 @@ export async function GET(request: Request) {
         }
 
         const warnings: string[] = [];
+        const includeFba = fulfillment !== 'fbm';
 
         let listings: any[] = [];
         try {
@@ -125,16 +157,18 @@ export async function GET(request: Request) {
         }
 
         let fbaItems: any[] = [];
-        try {
-            fbaItems = await fetchAmazonInventory();
-        } catch (err: any) {
-            const message = err?.message || 'Unknown FBA inventory error';
-            warnings.push(`FBA inventory: ${message}`);
-            console.error('[Inventory] FBA inventory failed:', message);
+        if (includeFba) {
+            try {
+                fbaItems = await fetchAmazonInventory();
+            } catch (err: any) {
+                const message = err?.message || 'Unknown FBA inventory error';
+                warnings.push(`FBA inventory: ${message}`);
+                console.error('[Inventory] FBA inventory failed:', message);
+            }
         }
 
-        if (listings.length === 0 && fbaItems.length === 0) {
-            const stale = getStale<InventoryApiPayload>(CACHE_KEY);
+        if (listings.length === 0 && (!includeFba || fbaItems.length === 0)) {
+            const stale = getStale<InventoryApiPayload>(cacheKey);
             if (stale) {
                 return NextResponse.json({
                     ...stale,
@@ -148,6 +182,10 @@ export async function GET(request: Request) {
             return NextResponse.json({
                 error: 'Unable to load inventory from Amazon sources',
                 ...emptyPayload(),
+                meta: {
+                    ...emptyPayload().meta,
+                    fulfillment,
+                },
                 warnings,
             }, { status: 502 });
         }
@@ -181,25 +219,33 @@ export async function GET(request: Request) {
         for (const listing of listings) {
             const sku = listing['seller-sku'] || listing['sku'] || listing['Seller SKU'] || '';
             if (!sku || seenSkus.has(sku)) continue;
-            seenSkus.add(sku);
 
             const asin = listing['asin1'] || listing['ASIN'] || listing['asin'] || '';
             const fba = fbaMap.get(sku);
+            const normalizedChannel = normalizeFulfillmentChannel(
+                listing['fulfillment-channel'] || listing['Fulfillment Channel'],
+                Boolean(fba),
+            );
+            if (!matchesFulfillment(normalizedChannel, fulfillment)) continue;
+            seenSkus.add(sku);
+
             const catalog = catalogMap.get(asin) || {};
             const details = fba?.inventoryDetails || {};
             const reserved = details.reservedQuantity || {};
             const unfulfillable = details.unfulfillableQuantity || {};
 
-            const fulfillable = num(fba ? details.fulfillableQuantity : 0);
+            const fulfillable = normalizedChannel === 'FBA' ? num(details.fulfillableQuantity) : 0;
             const inboundWorking = num(details.inboundWorkingQuantity);
             const inboundShipped = num(details.inboundShippedQuantity);
             const inboundReceiving = num(details.inboundReceivingQuantity);
-            const totalInbound = inboundWorking + inboundShipped + inboundReceiving;
-            const reservedQty = num(reserved.totalReservedQuantity ?? reserved);
-            const unfulfillableQty = num(unfulfillable.totalUnfulfillableQuantity ?? unfulfillable);
-            const stock = fba ? num(fba.totalQuantity) : num(listing['quantity'] || listing['Quantity Available'] || 0);
-            const price = parseFloat(listing['price'] || listing['Price'] || '0') || 0;
-            const fulfillmentChannel = listing['fulfillment-channel'] || listing['Fulfillment Channel'] || (fba ? 'FBA' : 'FBM');
+            const totalInbound = normalizedChannel === 'FBA' ? inboundWorking + inboundShipped + inboundReceiving : 0;
+            const reservedQty = normalizedChannel === 'FBA' ? num(reserved.totalReservedQuantity ?? reserved) : 0;
+            const unfulfillableQty = normalizedChannel === 'FBA' ? num(unfulfillable.totalUnfulfillableQuantity ?? unfulfillable) : 0;
+            const stock = normalizedChannel === 'FBA'
+                ? (fba ? num(fba.totalQuantity) : 0)
+                : toNumber(listing['quantity'] || listing['Quantity Available'] || 0);
+            const price = toNumber(listing['price'] || listing['Price'] || 0);
+            const availableQty = normalizedChannel === 'FBA' ? (fulfillable || stock) : stock;
             const listingStatus = listing['status'] || listing['Status'] || 'Active';
 
             items.push({
@@ -217,9 +263,9 @@ export async function GET(request: Request) {
                 inbound: totalInbound,
                 reserved: reservedQty,
                 unfulfillable: unfulfillableQty,
-                fulfillmentChannel,
-                status: stock === 0 ? 'out-of-stock'
-                    : fulfillable < 10 && fulfillmentChannel.includes('FBA') ? 'low-stock'
+                fulfillmentChannel: normalizedChannel,
+                status: availableQty === 0 ? 'out-of-stock'
+                    : availableQty < 10 ? 'low-stock'
                         : 'in-stock',
                 listingStatus,
                 lastUpdated: fba?.lastUpdatedTime || new Date().toISOString(),
@@ -228,6 +274,7 @@ export async function GET(request: Request) {
 
         for (const fba of fbaItems) {
             if (!fba.sellerSku || seenSkus.has(fba.sellerSku)) continue;
+            if (!matchesFulfillment('FBA', fulfillment)) continue;
             seenSkus.add(fba.sellerSku);
 
             const catalog = catalogMap.get(fba.asin) || {};
@@ -253,7 +300,7 @@ export async function GET(request: Request) {
                 reserved: num(reserved.totalReservedQuantity ?? reserved),
                 unfulfillable: num(unfulfillable.totalUnfulfillableQuantity ?? unfulfillable),
                 fulfillmentChannel: 'FBA',
-                status: stock === 0 ? 'out-of-stock' : fulfillable < 10 ? 'low-stock' : 'in-stock',
+                status: (fulfillable || stock) === 0 ? 'out-of-stock' : (fulfillable || stock) < 10 ? 'low-stock' : 'in-stock',
                 listingStatus: 'Active',
                 lastUpdated: fba.lastUpdatedTime || new Date().toISOString(),
             });
@@ -265,12 +312,13 @@ export async function GET(request: Request) {
             meta: {
                 listingsCount: listings.length,
                 fbaCount: fbaItems.length,
+                fulfillment,
                 partialData: warnings.length > 0,
             },
             warnings,
         };
 
-        setCache(CACHE_KEY, payload, TTL.INVENTORY);
+        setCache(cacheKey, payload, TTL.INVENTORY);
 
         return NextResponse.json({
             ...payload,
@@ -278,7 +326,7 @@ export async function GET(request: Request) {
             source: 'api',
         });
     } catch (e: any) {
-        const stale = getStale<InventoryApiPayload>(CACHE_KEY);
+        const stale = getStale<InventoryApiPayload>(cacheKey);
         if (stale) {
             return NextResponse.json({
                 ...stale,
@@ -309,8 +357,8 @@ function computeStats(items: InventoryProduct[]): InventoryStats {
         totalUnits: items.reduce((sum, item) => sum + item.stock, 0),
         fulfillable: items.reduce((sum, item) => sum + item.fulfillable, 0),
         inbound: items.reduce((sum, item) => sum + item.inbound, 0),
-        fbaCount: items.filter(item => item.fulfillmentChannel.includes('FBA') || item.fulfillmentChannel.includes('AMAZON')).length,
-        fbmCount: items.filter(item => !item.fulfillmentChannel.includes('FBA') && !item.fulfillmentChannel.includes('AMAZON')).length,
+        fbaCount: items.filter(item => item.fulfillmentChannel === 'FBA').length,
+        fbmCount: items.filter(item => item.fulfillmentChannel === 'FBM').length,
         inStock: items.filter(item => item.status === 'in-stock').length,
         lowStock: items.filter(item => item.status === 'low-stock').length,
         outOfStock: items.filter(item => item.status === 'out-of-stock').length,
