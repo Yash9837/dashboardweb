@@ -71,7 +71,9 @@ Set these in `.env.local` and in Vercel Project Settings:
 ## Deploy to Vercel (production)
 
 1. Import the repo in Vercel.
-2. Set **Root Directory** to `apps/dashboard`.
+2. Set **Root Directory**:
+   - For this repo (`dashboardweb`): `.`
+   - Only if deploying from a monorepo parent: `apps/dashboard`
 3. Keep framework as **Next.js**.
 4. Add all environment variables listed above.
 5. Deploy.
