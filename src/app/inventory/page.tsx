@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import PageHeader from '@/components/layout/PageHeader';
 import StatsGrid from '@/components/cards/StatsGrid';
@@ -8,8 +8,11 @@ import { useFetch } from '@/hooks/useFetch';
 import { getStatusColor } from '@/lib/utils';
 import { Package, Boxes, AlertTriangle, XCircle, ArrowUpDown, TrendingUp } from 'lucide-react';
 
+const PAGE_SIZE = 25;
+
 export default function InventoryPage() {
     const [statusFilter, setStatusFilter] = useState('all');
+    const [page, setPage] = useState(1);
     const { data, loading, error, refresh } = useFetch<any>('/api/inventory?fulfillment=fbm');
 
     const items = data?.items || [];
@@ -18,6 +21,21 @@ export default function InventoryPage() {
     const filteredItems = statusFilter === 'all'
         ? items
         : items.filter((i: any) => i.status === statusFilter);
+    const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
+    const startIndex = (page - 1) * PAGE_SIZE;
+    const paginatedItems = filteredItems.slice(startIndex, startIndex + PAGE_SIZE);
+    const rangeStart = filteredItems.length === 0 ? 0 : startIndex + 1;
+    const rangeEnd = Math.min(startIndex + PAGE_SIZE, filteredItems.length);
+
+    useEffect(() => {
+        setPage(1);
+    }, [statusFilter, items.length]);
+
+    useEffect(() => {
+        if (page > totalPages) {
+            setPage(totalPages);
+        }
+    }, [page, totalPages]);
 
     const statItems = [
         { label: 'Total SKUs', value: stats.totalSkus, icon: Boxes, color: 'text-indigo-400' },
@@ -34,6 +52,11 @@ export default function InventoryPage() {
         { key: 'low-stock', label: 'Low Stock', count: items.filter((i: any) => i.status === 'low-stock').length },
         { key: 'out-of-stock', label: 'Out of Stock', count: items.filter((i: any) => i.status === 'out-of-stock').length },
     ];
+
+    const handleFilterChange = (nextFilter: string) => {
+        setStatusFilter(nextFilter);
+        setPage(1);
+    };
 
     if (error) return <DashboardLayout><div className="text-red-400 text-center py-20">Error: {error}</div></DashboardLayout>;
 
@@ -57,7 +80,7 @@ export default function InventoryPage() {
                     <div className="bg-[#111827]/80 border border-white/5 rounded-2xl p-6">
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-lg font-semibold text-white">Inventory Items</h2>
-                            <FilterTabs tabs={filterTabs} activeKey={statusFilter} onChange={setStatusFilter} />
+                            <FilterTabs tabs={filterTabs} activeKey={statusFilter} onChange={handleFilterChange} />
                         </div>
 
                         <div className="overflow-x-auto">
@@ -70,8 +93,10 @@ export default function InventoryPage() {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {filteredItems.map((item: any) => (
-                                        <tr key={item.asin || item.sku} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                                    {paginatedItems.map((item: any, idx: number) => {
+                                        const rowKey = item.sku || `${item.asin || 'no-asin'}-${item.fulfillmentChannel || 'unknown'}-${startIndex + idx}`;
+                                        return (
+                                            <tr key={rowKey} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
                                             <td className="py-3 px-2">
                                                 <div className="flex items-center gap-3 min-w-[200px]">
                                                     {item.image ? (
@@ -113,12 +138,40 @@ export default function InventoryPage() {
                                                 </span>
                                             </td>
                                         </tr>
-                                    ))}
-                                    {filteredItems.length === 0 && (
+                                        );
+                                    })}
+                                    {paginatedItems.length === 0 && (
                                         <tr><td colSpan={8} className="text-center text-slate-600 py-8">No items found</td></tr>
                                     )}
                                 </tbody>
                             </table>
+                        </div>
+
+                        <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <p className="text-xs text-slate-500">
+                                Showing {rangeStart}-{rangeEnd} of {filteredItems.length} items
+                            </p>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setPage(prev => Math.max(1, prev - 1))}
+                                    disabled={page === 1}
+                                    className="px-3 py-1.5 text-xs rounded-lg border border-white/10 text-slate-300 hover:border-white/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                    Previous
+                                </button>
+                                <span className="text-xs text-slate-400 min-w-[100px] text-center">
+                                    Page {page} of {totalPages}
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => setPage(prev => Math.min(totalPages, prev + 1))}
+                                    disabled={page >= totalPages}
+                                    className="px-3 py-1.5 text-xs rounded-lg border border-white/10 text-slate-300 hover:border-white/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                                >
+                                    Next
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </>

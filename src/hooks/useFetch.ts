@@ -17,11 +17,17 @@ export function useFetch<T = any>(url: string, deps: any[] = []): UseFetchResult
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
-    const fetchData = useCallback(async () => {
+    const buildRequestUrl = useCallback((force: boolean) => {
+        if (!force) return url;
+        const sep = url.includes('?') ? '&' : '?';
+        return `${url}${sep}refresh=true&_ts=${Date.now()}`;
+    }, [url]);
+
+    const fetchData = useCallback(async (force = false) => {
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch(url);
+            const res = await fetch(buildRequestUrl(force), { cache: 'no-store' });
             if (!res.ok) throw new Error(`API returned ${res.status}`);
             const json = await res.json();
             if (json.error && !json.kpis && !json.orders && !json.items) {
@@ -33,11 +39,15 @@ export function useFetch<T = any>(url: string, deps: any[] = []): UseFetchResult
         } finally {
             setLoading(false);
         }
-    }, [url]);
+    }, [buildRequestUrl]);
 
     useEffect(() => {
-        fetchData();
+        void fetchData(false);
     }, [fetchData, ...deps]);
 
-    return { data, loading, error, refresh: fetchData };
+    const refresh = useCallback(async () => {
+        await fetchData(true);
+    }, [fetchData]);
+
+    return { data, loading, error, refresh };
 }

@@ -7,7 +7,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 type FulfillmentFilter = 'fbm' | 'fba' | 'all';
-const CACHE_KEY_PREFIX = 'inventory_all_products_v3';
+const CACHE_KEY_PREFIX = 'inventory_all_products_v4';
 
 interface InventoryProduct {
     sku: string;
