@@ -24,7 +24,7 @@ const PERIODS: Record<string, number> = {
 };
 
 const DASHBOARD_TIME_ZONE = process.env.DASHBOARD_TIMEZONE || 'Asia/Kolkata';
-const DASHBOARD_CACHE_VERSION = 'v3';
+const DASHBOARD_CACHE_VERSION = 'v4';
 const NOW_SAFETY_BUFFER_MS = 3 * 60 * 1000;
 
 function getDatePartsInTimeZone(date: Date, timeZone: string): { year: number; month: number; day: number } {
@@ -139,6 +139,11 @@ interface OrderMetrics {
 
 const PROFIT_MARGIN = 0.30; // 30% default
 
+function toAmount(value: unknown): number {
+    const raw = typeof value === 'number' ? value : parseFloat(String(value ?? '').replace(/[^0-9.-]/g, ''));
+    return Number.isFinite(raw) ? raw : 0;
+}
+
 function computeMetrics(orders: any[]): OrderMetrics {
     let totalRevenue = 0;
     let pendingOrders = 0;
@@ -150,7 +155,7 @@ function computeMetrics(orders: any[]): OrderMetrics {
 
     for (const order of orders) {
         if (order.OrderTotal) {
-            totalRevenue += parseFloat(order.OrderTotal.Amount);
+            totalRevenue += toAmount(order?.OrderTotal?.Amount);
         }
         unitsSold += (order.NumberOfItemsShipped || 0) + (order.NumberOfItemsUnshipped || 0);
 
@@ -363,7 +368,7 @@ export async function GET(request: Request) {
             if (!trendMap[key]) trendMap[key] = { revenue: 0, orders: 0, profit: 0 };
             trendMap[key].orders++;
             if (order.OrderTotal) {
-                const amount = parseFloat(order.OrderTotal.Amount);
+                const amount = toAmount(order?.OrderTotal?.Amount);
                 trendMap[key].revenue += amount;
                 trendMap[key].profit += amount * PROFIT_MARGIN;
             }
@@ -405,7 +410,7 @@ export async function GET(request: Request) {
                 ? `${o.ShippingAddress.City || ''}, ${o.ShippingAddress.StateOrRegion || ''}`.replace(/^, /, '')
                 : 'N/A',
             items: (o.NumberOfItemsShipped || 0) + (o.NumberOfItemsUnshipped || 0),
-            total: o.OrderTotal ? parseFloat(o.OrderTotal.Amount) : 0,
+            total: toAmount(o?.OrderTotal?.Amount),
             currency: o.OrderTotal?.CurrencyCode || 'INR',
             status: mapOrderStatus(o),
         }));

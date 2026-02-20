@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const DEFAULT_DAYS = 30;
 const DEFAULT_ORDER_ENRICH_LIMIT = process.env.VERCEL ? 75 : 200;
 const DEFAULT_ITEMS_CONCURRENCY = process.env.VERCEL ? 4 : 6;
@@ -99,6 +99,11 @@ function readNonNegativeInt(value: string | undefined | null, fallback: number, 
 function sleep(ms: number): Promise<void> {
     if (ms <= 0) return Promise.resolve();
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function toAmount(value: unknown): number {
+    const raw = typeof value === 'number' ? value : parseFloat(String(value ?? '').replace(/[^0-9.-]/g, ''));
+    return Number.isFinite(raw) ? raw : 0;
 }
 
 async function fetchOrderItemsForOrders(orderIds: string[], concurrency: number, delayMs: number): Promise<Map<string, any[]>> {
@@ -213,7 +218,7 @@ export async function GET(request: Request) {
         const catalogMap = await fetchCatalogBatch([...allAsins]);
 
         const orders: EnrichedOrder[] = ordersForEnrichment.map((order: any) => {
-            const total = order.OrderTotal ? parseFloat(order.OrderTotal.Amount) : 0;
+            const total = toAmount(order?.OrderTotal?.Amount);
             const mappedStatus = mapDisplayStatus(order);
             const orderItems = orderItemsMap.get(order.AmazonOrderId) || [];
 
@@ -226,7 +231,7 @@ export async function GET(request: Request) {
                     image: catalog.image || null,
                     brand: catalog.brand || null,
                     quantity: item.QuantityOrdered || 1,
-                    price: item.ItemPrice ? parseFloat(item.ItemPrice.Amount) : 0,
+                    price: toAmount(item?.ItemPrice?.Amount),
                     currency: item.ItemPrice?.CurrencyCode || 'INR',
                 };
             });
@@ -252,7 +257,7 @@ export async function GET(request: Request) {
                 itemsShipped: order.NumberOfItemsShipped || 0,
                 itemsUnshipped: order.NumberOfItemsUnshipped || 0,
                 total,
-                amount: total > 0 ? formatINR(total) : '—',
+                amount: formatINR(total),
                 currency: order.OrderTotal?.CurrencyCode || 'INR',
                 orderType: order.OrderType || 'StandardOrder',
                 isPrime: order.IsPrime || false,
@@ -305,7 +310,7 @@ function computeStatsFromRaw(orders: any[]): OrdersStats {
     for (const order of orders) {
         stats.total += 1;
         if (order.OrderTotal) {
-            stats.revenue += parseFloat(order.OrderTotal.Amount);
+            stats.revenue += toAmount(order?.OrderTotal?.Amount);
         }
 
         const status = mapDisplayStatus(order).toLowerCase();

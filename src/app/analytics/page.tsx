@@ -10,6 +10,14 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pi
 
 const PIE_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
+function getOrderAmount(order: any): number {
+    const direct = Number(order?.total);
+    if (Number.isFinite(direct)) return direct;
+
+    const fromAmount = parseFloat(String(order?.amount || '0').replace(/[₹,]/g, '').trim());
+    return Number.isFinite(fromAmount) ? fromAmount : 0;
+}
+
 export default function AnalyticsPage() {
     const { data, loading, error, refresh } = useFetch<any>('/api/orders?days=90');
 
@@ -18,7 +26,7 @@ export default function AnalyticsPage() {
     // Process data for charts
     const dailyRevenue = orders.reduce((acc: any, o: any) => {
         const day = new Date(o.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
-        const amt = parseFloat(o.amount?.replace(/[₹,]/g, '') || '0');
+        const amt = getOrderAmount(o);
         acc[day] = (acc[day] || 0) + amt;
         return acc;
     }, {} as Record<string, number>);
@@ -30,7 +38,7 @@ export default function AnalyticsPage() {
     // Top cities
     const cityRevenue = orders.reduce((acc: any, o: any) => {
         const city = o.city || 'Unknown';
-        const amt = parseFloat(o.amount?.replace(/[₹,]/g, '') || '0');
+        const amt = getOrderAmount(o);
         acc[city] = (acc[city] || 0) + amt;
         return acc;
     }, {} as Record<string, number>);
@@ -48,7 +56,7 @@ export default function AnalyticsPage() {
 
     const statusData = Object.entries(statusDist).map(([name, value]) => ({ name, value }));
 
-    const totalRevenue = orders.reduce((s: number, o: any) => s + parseFloat(o.amount?.replace(/[₹,]/g, '') || '0'), 0);
+    const totalRevenue = orders.reduce((s: number, o: any) => s + getOrderAmount(o), 0);
     const avgOrderValue = orders.length ? totalRevenue / orders.length : 0;
 
     const statItems = [

@@ -75,6 +75,7 @@ export function mapOrderStatus(input: string | { OrderStatus?: string; EasyShipS
  * Format a number as INR currency string.
  */
 export function formatINR(amount: number | string): string {
-    const n = typeof amount === 'string' ? parseFloat(amount) : amount;
+    const parsed = typeof amount === 'string' ? parseFloat(amount.replace(/[^0-9.-]/g, '')) : amount;
+    const n = Number.isFinite(parsed) ? parsed : 0;
     return `₹${n.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 }
