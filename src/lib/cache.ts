@@ -159,4 +159,5 @@ export const TTL = {
     CATALOG: 7 * 24 * 60 * 60 * 1000,  // 7 days (product info rarely changes)
     ORDER_ITEMS: 24 * 60 * 60 * 1000,  // 24 hours
     INVENTORY: 10 * 60 * 1000,         // 10 minutes
+    PERFORMANCE: 10 * 60 * 1000,       // 10 minutes
 } as const;
