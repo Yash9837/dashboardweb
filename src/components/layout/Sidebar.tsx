@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-    LayoutDashboard, BarChart3, DollarSign, Package, ShoppingCart,
+    LayoutDashboard, BarChart3, DollarSign, Zap, Package, ShoppingCart,
     Plug, Settings, ChevronLeft, ChevronRight, Sun, Moon
 } from 'lucide-react';
 
@@ -11,6 +11,7 @@ const navItems = [
     { label: 'Dashboard', href: '/', icon: LayoutDashboard },
     { label: 'Analytics', href: '/analytics', icon: BarChart3 },
     { label: 'Sales & Revenue', href: '/sales', icon: DollarSign },
+    { label: 'Performance', href: '/performance', icon: Zap },
     { label: 'Inventory', href: '/inventory', icon: Package },
     { label: 'Orders & Returns', href: '/orders', icon: ShoppingCart },
     { label: 'Integrations', href: '/integrations', icon: Plug },
