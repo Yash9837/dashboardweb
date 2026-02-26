@@ -106,7 +106,7 @@ export interface FetchAmazonOrdersOptions {
 }
 
 /**
- * Fetch orders from Amazon SP-API
+ * Fetch ALL orders from Amazon SP-API (auto-paginate through all pages)
  */
 export async function fetchAmazonOrders(options: number | FetchAmazonOrdersOptions = 30): Promise<any> {
     const config = getConfig();
@@ -114,19 +114,31 @@ export async function fetchAmazonOrders(options: number | FetchAmazonOrdersOptio
     const daysBack = resolved.daysBack ?? 30;
     const createdAfter = resolved.createdAfter || new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
 
-    const params: Record<string, string> = {
-        MarketplaceIds: config.marketplaceId,
-        CreatedAfter: createdAfter,
-        MaxResultsPerPage: String(Math.min(resolved.maxResultsPerPage || 100, 100)),
-    };
+    const allOrders: any[] = [];
+    let nextToken: string | undefined;
 
-    if (resolved.createdBefore) {
-        params.CreatedBefore = resolved.createdBefore;
-    }
+    do {
+        const params: Record<string, string> = nextToken
+            ? { NextToken: nextToken }
+            : {
+                MarketplaceIds: config.marketplaceId,
+                CreatedAfter: createdAfter,
+                MaxResultsPerPage: String(Math.min(resolved.maxResultsPerPage || 100, 100)),
+                ...(resolved.createdBefore ? { CreatedBefore: resolved.createdBefore } : {}),
+            };
 
-    const data = await spApiGet('/orders/v0/orders', params);
+        const data = await spApiGet('/orders/v0/orders', params);
+        const orders = data.payload?.Orders || [];
+        allOrders.push(...orders);
+        nextToken = data.payload?.NextToken;
 
-    return data.payload?.Orders || [];
+        if (nextToken) {
+            // Rate limit: Amazon allows 1 request per second for getOrders
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    } while (nextToken);
+
+    return allOrders;
 }
 
 /**
@@ -135,6 +147,49 @@ export async function fetchAmazonOrders(options: number | FetchAmazonOrdersOptio
 export async function fetchOrderItems(orderId: string): Promise<any[]> {
     const data = await spApiGet(`/orders/v0/orders/${orderId}/orderItems`);
     return data.payload?.OrderItems || [];
+}
+
+/**
+ * Fetch financial events from the Finances API (SOURCE OF TRUTH for revenue).
+ * Auto-paginates through all pages.
+ * Rate limit: ~0.5 req/s — 2s delay between pages.
+ */
+export interface FetchFinancialEventsOptions {
+    postedAfter?: string;
+    postedBefore?: string;
+    maxResultsPerPage?: number;
+}
+
+export async function fetchFinancialEvents(options: FetchFinancialEventsOptions = {}): Promise<any[]> {
+    const postedAfter = options.postedAfter || new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const allEvents: any[] = [];
+    let nextToken: string | undefined;
+    let pageCount = 0;
+
+    do {
+        const params: Record<string, string> = {
+            PostedAfter: postedAfter,
+            MaxResultsPerPage: String(options.maxResultsPerPage || 100),
+        };
+        if (options.postedBefore) params.PostedBefore = options.postedBefore;
+        if (nextToken) params.NextToken = nextToken;
+
+        const data = await spApiGet<any>('/finances/v0/financialEvents', params);
+        const eventList = data.payload?.FinancialEvents;
+        if (eventList) {
+            allEvents.push(eventList);
+        }
+        nextToken = data.payload?.NextToken;
+        pageCount++;
+        console.log(`[Finances] Fetched page ${pageCount}${nextToken ? ', more pages available...' : ' (last page)'}`);
+
+        if (nextToken) {
+            // Rate limit: ~0.5 req/s
+            await sleep(2000);
+        }
+    } while (nextToken);
+
+    return allEvents;
 }
 
 /**

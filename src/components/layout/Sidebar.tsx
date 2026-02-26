@@ -4,11 +4,12 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
     LayoutDashboard, BarChart3, DollarSign, Zap, Package, ShoppingCart,
-    Plug, Settings, ChevronLeft, ChevronRight, Sun, Moon
+    Plug, Settings, ChevronLeft, ChevronRight, Sun, Moon, Command
 } from 'lucide-react';
 
 const navItems = [
     { label: 'Dashboard', href: '/', icon: LayoutDashboard },
+    { label: 'Command Center', href: '/command-center', icon: Command },
     { label: 'Analytics', href: '/analytics', icon: BarChart3 },
     { label: 'Sales & Revenue', href: '/sales', icon: DollarSign },
     { label: 'Performance', href: '/performance', icon: Zap },
