@@ -1,10 +1,10 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
     LayoutDashboard, BarChart3, DollarSign, Zap, Package, ShoppingCart,
-    Plug, Settings, ChevronLeft, ChevronRight, Sun, Moon, Command
+    Plug, Settings, ChevronLeft, ChevronRight, Command
 } from 'lucide-react';
 
 const navItems = [
@@ -21,20 +21,7 @@ const navItems = [
 
 export default function Sidebar() {
     const [collapsed, setCollapsed] = useState(false);
-    const [dark, setDark] = useState(false);
     const pathname = usePathname();
-
-    useEffect(() => {
-        const saved = window.localStorage.getItem('dashboard-theme');
-        const useDark = saved === 'dark';
-        setDark(useDark);
-        document.documentElement.classList.toggle('dark', useDark);
-    }, []);
-
-    useEffect(() => {
-        document.documentElement.classList.toggle('dark', dark);
-        window.localStorage.setItem('dashboard-theme', dark ? 'dark' : 'light');
-    }, [dark]);
 
     return (
         <aside
@@ -60,7 +47,7 @@ export default function Sidebar() {
             {/* Nav Items */}
             <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
                 {navItems.map((item) => {
-                    const isActive = pathname === item.href;
+                    const isActive = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
                     const Icon = item.icon;
                     return (
                         <Link
@@ -87,17 +74,7 @@ export default function Sidebar() {
             </nav>
 
             {/* Bottom controls */}
-            <div className="p-3 border-t border-white/5 space-y-2 shrink-0">
-                {/* Theme toggle */}
-                <button
-                    onClick={() => setDark(!dark)}
-                    className="flex items-center gap-3 w-full px-3 py-2 text-sm text-slate-400 hover:text-white hover:bg-white/5 rounded-xl transition-colors"
-                    title={collapsed ? 'Toggle theme' : ''}
-                >
-                    {dark ? <Sun size={18} /> : <Moon size={18} />}
-                    {!collapsed && <span>{dark ? 'Light Mode' : 'Dark Mode'}</span>}
-                </button>
-
+            <div className="p-3 border-t border-white/5 shrink-0">
                 {/* Collapse toggle */}
                 <button
                     onClick={() => setCollapsed(!collapsed)}

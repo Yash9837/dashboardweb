@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import { useFetch } from '@/hooks/useFetch';
 import RevenueStateCards from '@/components/command-center/RevenueStateCards';
@@ -11,7 +11,7 @@ import AlertsPanel from '@/components/command-center/AlertsPanel';
 import { RevenueState, RevenueStateBreakdown } from '@/lib/types';
 import {
     RefreshCw, AlertCircle, Loader2, CloudDownload, Zap,
-    Lock, Radio, Shield,
+    Lock, Radio, Shield, Calendar,
 } from 'lucide-react';
 import {
     PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
@@ -22,6 +22,7 @@ const PERIODS = [
     { key: '7d', label: '7D' },
     { key: '30d', label: '30D' },
     { key: '90d', label: '90D' },
+    { key: 'custom', label: 'Custom' },
 ];
 
 export default function CommandCenterPage() {
@@ -30,11 +31,27 @@ export default function CommandCenterPage() {
     const [syncing, setSyncing] = useState(false);
     const [syncResult, setSyncResult] = useState<string | null>(null);
 
+    // Custom date range state
+    const today = new Date().toISOString().split('T')[0];
+    const [customStart, setCustomStart] = useState(() => {
+        const d = new Date(); d.setDate(d.getDate() - 7);
+        return d.toISOString().split('T')[0];
+    });
+    const [customEnd, setCustomEnd] = useState(today);
+
+    // Build query string based on period or custom dates
+    const dateQuery = useMemo(() => {
+        if (period === 'custom') {
+            return `startDate=${customStart}&endDate=${customEnd}`;
+        }
+        return `period=${period}`;
+    }, [period, customStart, customEnd]);
+
     const { data: metricsData, loading: metricsLoading, error: metricsError, refresh: refreshMetrics } =
-        useFetch<any>(`/api/command-center/metrics?period=${period}`, [period]);
+        useFetch<any>(`/api/command-center/metrics?${dateQuery}`, [dateQuery]);
 
     const { data: skuData, loading: skuLoading, refresh: refreshSkus } =
-        useFetch<any>(`/api/command-center/sku-performance?period=${period}`, [period]);
+        useFetch<any>(`/api/command-center/sku-performance?${dateQuery}`, [dateQuery]);
 
     const { data: alertsData, loading: alertsLoading, refresh: refreshAlerts } =
         useFetch<any>('/api/command-center/alerts');
@@ -143,10 +160,31 @@ export default function CommandCenterPage() {
                                     : 'text-slate-400 hover:text-white hover:bg-white/5'
                                     }`}
                             >
+                                {p.key === 'custom' && <Calendar size={10} className="inline mr-1" />}
                                 {p.label}
                             </button>
                         ))}
                     </div>
+
+                    {/* Custom Date Inputs */}
+                    {period === 'custom' && (
+                        <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-1.5">
+                            <input
+                                type="date"
+                                value={customStart}
+                                onChange={e => setCustomStart(e.target.value)}
+                                className="bg-transparent text-xs text-slate-300 border-none outline-none cursor-pointer [color-scheme:dark]"
+                            />
+                            <span className="text-slate-500 text-xs">→</span>
+                            <input
+                                type="date"
+                                value={customEnd}
+                                max={today}
+                                onChange={e => setCustomEnd(e.target.value)}
+                                className="bg-transparent text-xs text-slate-300 border-none outline-none cursor-pointer [color-scheme:dark]"
+                            />
+                        </div>
+                    )}
 
                     <button
                         onClick={handleRefresh}

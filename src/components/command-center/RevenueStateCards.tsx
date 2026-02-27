@@ -1,11 +1,23 @@
 'use client';
 import { CommandCenterKPI, RevenueState } from '@/lib/types';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import Link from 'next/link';
 
 interface Props {
     kpis: CommandCenterKPI[];
     state: RevenueState;
 }
+
+const METRIC_SLUGS: Record<string, string> = {
+    'Total Revenue': 'revenue',
+    'Net Contribution': 'net-contribution',
+    'Contribution %': 'contribution-pct',
+    'Total Ad Spend': 'revenue',
+    'Blended TACOS': 'revenue',
+    'Units Sold': 'units-sold',
+    'Inventory Value': 'inventory-value',
+    'Active SKUs': 'active-skus',
+};
 
 function formatValue(kpi: CommandCenterKPI, state: RevenueState): string {
     const raw = state === 'live' ? kpi.live_value : kpi.locked_value;
@@ -42,7 +54,6 @@ export default function RevenueStateCards({ kpis, state }: Props) {
                             ? 'text-emerald-400'
                             : 'text-red-400';
 
-                // Color accents for different KPI types
                 const accents = [
                     'from-indigo-500/20 to-indigo-600/5',
                     'from-emerald-500/20 to-emerald-600/5',
@@ -58,45 +69,45 @@ export default function RevenueStateCards({ kpis, state }: Props) {
                     'bg-amber-400', 'bg-rose-400', 'bg-sky-400', 'bg-orange-400',
                 ];
 
+                const slug = METRIC_SLUGS[kpi.label] || 'revenue';
+
                 return (
-                    <div
-                        key={i}
-                        className={`
-              relative overflow-hidden rounded-2xl p-5
-              bg-gradient-to-br ${accents[i % accents.length]}
-              border border-white/[0.06] backdrop-blur-sm
-              hover:border-white/[0.12] transition-all duration-300
-              group
-            `}
-                    >
-                        {/* Subtle glow dot */}
-                        <div className={`absolute top-3 right-3 w-2 h-2 rounded-full ${dotColors[i % dotColors.length]} opacity-60`} />
+                    <Link href={`/command-center/kpi/${slug}`} key={i}>
+                        <div
+                            className={`
+                                relative overflow-hidden rounded-2xl p-5
+                                bg-gradient-to-br ${accents[i % accents.length]}
+                                border border-white/[0.06] backdrop-blur-sm
+                                hover:border-white/[0.15] hover:scale-[1.02] transition-all duration-300
+                                cursor-pointer group
+                            `}
+                        >
+                            <div className={`absolute top-3 right-3 w-2 h-2 rounded-full ${dotColors[i % dotColors.length]} opacity-60`} />
 
-                        <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">
-                            {kpi.label}
-                        </p>
-                        <p className="text-2xl font-bold text-white tracking-tight mb-2">
-                            {formatValue(kpi, state)}
-                        </p>
-                        <div className={`flex items-center gap-1 text-xs font-medium ${changeColor}`}>
-                            {isActiveSkus ? (
-                                <span>{change > 0 ? `${change} at risk` : 'No at-risk SKUs'}</span>
-                            ) : (
-                                <>
-                                    {isUp ? <TrendingUp size={12} /> : isDown ? <TrendingDown size={12} /> : <Minus size={12} />}
-                                    <span>{isUp ? '+' : ''}{change}{kpi.format === 'percent' ? 'pp' : '%'} vs prev period</span>
-                                </>
-                            )}
-                        </div>
+                            <p className="text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">
+                                {kpi.label}
+                            </p>
+                            <p className="text-2xl font-bold text-white tracking-tight mb-2">
+                                {formatValue(kpi, state)}
+                            </p>
+                            <div className={`flex items-center gap-1 text-xs font-medium ${changeColor}`}>
+                                {isActiveSkus ? (
+                                    <span>{change > 0 ? `${change} at risk` : 'No at-risk SKUs'}</span>
+                                ) : (
+                                    <>
+                                        {isUp ? <TrendingUp size={12} /> : isDown ? <TrendingDown size={12} /> : <Minus size={12} />}
+                                        <span>{isUp ? '+' : ''}{change}{kpi.format === 'percent' ? 'pp' : '%'} vs prev period</span>
+                                    </>
+                                )}
+                            </div>
 
-                        {/* State indicator */}
-                        <div className="absolute bottom-3 right-3">
-                            <span className={`text-[10px] font-semibold uppercase tracking-widest ${state === 'live' ? 'text-emerald-500/50' : 'text-indigo-500/50'
-                                }`}>
-                                {state}
-                            </span>
+                            <div className="absolute bottom-3 right-3">
+                                <span className={`text-[10px] font-semibold uppercase tracking-widest ${state === 'live' ? 'text-emerald-500/50' : 'text-indigo-500/50'}`}>
+                                    {state}
+                                </span>
+                            </div>
                         </div>
-                    </div>
+                    </Link>
                 );
             })}
         </div>

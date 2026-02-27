@@ -8,17 +8,29 @@ export async function GET(request: Request) {
     try {
         const { searchParams } = new URL(request.url);
         const period = searchParams.get('period') || '30d';
-        const days = { '7d': 7, '30d': 30, '90d': 90 }[period] || 30;
+        const customStart = searchParams.get('startDate');
+        const customEnd = searchParams.get('endDate');
 
-        const startDate = new Date();
-        startDate.setDate(startDate.getDate() - days);
-        const startStr = startDate.toISOString().split('T')[0];
+        let startStr: string;
+        let endStr: string | null = null;
+
+        if (customStart) {
+            startStr = customStart;
+            endStr = customEnd || new Date().toISOString().split('T')[0];
+        } else {
+            const days = { '7d': 7, '30d': 30, '90d': 90 }[period] || 30;
+            const startDate = new Date();
+            startDate.setDate(startDate.getDate() - days);
+            startStr = startDate.toISOString().split('T')[0];
+        }
 
         // Read pre-aggregated SKU metrics
-        const { data: skuMetrics, error: skuErr } = await supabase
+        let skuQuery = supabase
             .from('sku_daily_metrics')
             .select('*')
             .gte('date', startStr);
+        if (endStr) skuQuery = skuQuery.lte('date', endStr);
+        const { data: skuMetrics, error: skuErr } = await skuQuery;
 
         if (skuErr) throw skuErr;
 

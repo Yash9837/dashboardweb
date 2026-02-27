@@ -1,5 +1,6 @@
 'use client';
 import { BreakdownItem, FinancialSummary } from '@/lib/types';
+import Link from 'next/link';
 
 interface Props {
     summary: FinancialSummary;
@@ -18,26 +19,20 @@ function formatCurrency(value: number): string {
 function BreakdownBlock({ title, subtitle, items }: { title: string; subtitle: string; items: BreakdownItem[] }) {
     return (
         <div className="bg-[#0f172a]/70 border border-white/[0.06] rounded-xl p-4">
-            <h4 className="text-sm font-semibold text-white">{title}</h4>
-            <p className="text-xs text-slate-500 mt-0.5 mb-3">{subtitle}</p>
+            <p className="text-xs font-semibold text-white mb-0.5">{title}</p>
+            <p className="text-[10px] text-slate-500 mb-3">{subtitle}</p>
             <div className="space-y-2">
-                {items.map((item) => {
-                    const color = item.kind === 'positive'
-                        ? 'text-emerald-400'
-                        : item.kind === 'negative'
-                            ? 'text-red-400'
-                            : 'text-indigo-300';
-                    const rowClass = item.kind === 'total'
-                        ? 'font-semibold border-t border-white/10 pt-2 mt-2'
-                        : '';
-
-                    return (
-                        <div key={item.label} className={`flex items-center justify-between text-xs ${rowClass}`}>
-                            <span className="text-slate-300">{item.label}</span>
-                            <span className={`${color} tabular-nums`}>{formatCurrency(item.value)}</span>
-                        </div>
-                    );
-                })}
+                {items.map((item, i) => (
+                    <div key={i} className="flex items-center justify-between">
+                        <span className="text-xs text-slate-400">{item.label}</span>
+                        <span className={`text-xs font-medium ${item.value > 0 ? 'text-emerald-400'
+                                : item.value < 0 ? 'text-red-400'
+                                    : 'text-white font-semibold'
+                            }`}>
+                            {formatCurrency(item.value)}
+                        </span>
+                    </div>
+                ))}
             </div>
         </div>
     );
@@ -46,7 +41,13 @@ function BreakdownBlock({ title, subtitle, items }: { title: string; subtitle: s
 export default function FinancialBreakdownPanel({ summary, netContributionBreakdown, totalProfitBreakdown }: Props) {
     return (
         <div className="bg-[#111827]/80 border border-white/[0.06] rounded-2xl p-6">
-            <h3 className="text-sm font-semibold text-white mb-1">Financial Breakdown</h3>
+            <div className="flex items-center justify-between mb-1">
+                <h3 className="text-sm font-semibold text-white">Financial Breakdown</h3>
+                <Link href="/command-center/financials"
+                    className="text-[11px] text-indigo-400 hover:text-indigo-300 font-medium transition-colors">
+                    View Details →
+                </Link>
+            </div>
             <p className="text-xs text-slate-500 mb-4">Net Contribution and Total Profit components</p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
@@ -62,7 +63,7 @@ export default function FinancialBreakdownPanel({ summary, netContributionBreakd
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <div className="space-y-3">
                 <BreakdownBlock
                     title="Net Contribution Breakdown"
                     subtitle="Gross revenue minus fees, costs, refunds and ad spend"

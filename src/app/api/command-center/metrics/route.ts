@@ -11,24 +11,38 @@ export async function GET(request: Request) {
     try {
         const { searchParams } = new URL(request.url);
         const period = searchParams.get('period') || '30d';
-        const days = PERIOD_DAYS[period] || 30;
+        const customStart = searchParams.get('startDate');
+        const customEnd = searchParams.get('endDate');
 
-        const now = new Date();
-        const startDate = new Date(now);
-        startDate.setDate(startDate.getDate() - days);
-        const startStr = startDate.toISOString().split('T')[0];
+        let startStr: string;
+        let endStr: string | null = null;
+        let days: number;
 
-        // Previous period for comparison
-        const prevStart = new Date(startDate);
-        prevStart.setDate(prevStart.getDate() - days);
+        if (customStart) {
+            // Custom date range
+            startStr = customStart; // YYYY-MM-DD
+            endStr = customEnd || new Date().toISOString().split('T')[0];
+            days = Math.max(1, Math.round((new Date(endStr).getTime() - new Date(startStr).getTime()) / (86400000)));
+        } else {
+            // Preset period
+            days = PERIOD_DAYS[period] || 30;
+            const now = new Date();
+            const startDate = new Date(now);
+            startDate.setDate(startDate.getDate() - days);
+            startStr = startDate.toISOString().split('T')[0];
+        }
+
+        // Previous period for comparison (same length window before start)
+        const prevStart = new Date(new Date(startStr).getTime() - days * 86400000);
         const prevStartStr = prevStart.toISOString().split('T')[0];
 
         // 1. Current period account daily metrics
-        const { data: currentMetrics } = await supabase
+        let currentQuery = supabase
             .from('account_daily_metrics')
             .select('*')
-            .gte('date', startStr)
-            .order('date', { ascending: true });
+            .gte('date', startStr);
+        if (endStr) currentQuery = currentQuery.lte('date', endStr);
+        const { data: currentMetrics } = await currentQuery.order('date', { ascending: true });
 
         // 2. Previous period for comparison
         const { data: prevMetrics } = await supabase
@@ -38,17 +52,21 @@ export async function GET(request: Request) {
             .lt('date', startStr);
 
         // 3. Revenue state breakdown from financial_events ledger
-        const { data: revenueStates } = await supabase
+        let revQuery = supabase
             .from('financial_events')
             .select('event_type, amount, delivery_date, posted_date')
             .gte('posted_date', startStr)
             .in('event_type', ['shipment', 'refund']);
+        if (endStr) revQuery = revQuery.lte('posted_date', endStr + 'T23:59:59');
+        const { data: revenueStates } = await revQuery;
 
         // 4. SKU-level data for real COGS/Shipping waterfall + return units
-        const { data: skuMetrics } = await supabase
+        let skuQuery = supabase
             .from('sku_daily_metrics')
             .select('sku, revenue_live, units_sold_live, refund_units, refund_amount, ad_spend, net_contribution')
             .gte('date', startStr);
+        if (endStr) skuQuery = skuQuery.lte('date', endStr);
+        const { data: skuMetrics } = await skuQuery;
 
         const { data: prevSkuMetrics } = await supabase
             .from('sku_daily_metrics')
