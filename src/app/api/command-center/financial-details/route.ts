@@ -33,6 +33,22 @@ export async function GET(request: Request) {
         const { data: events, error } = await query;
         if (error) throw error;
 
+        // ── Resolve null/UNKNOWN SKUs for fee events using order→SKU lookup ──
+        const orderSkuLookup = new Map<string, string>();
+        for (const e of (events || [])) {
+            if (e.event_type === 'shipment' && e.amazon_order_id && e.sku && e.sku !== 'UNKNOWN') {
+                if (!orderSkuLookup.has(e.amazon_order_id)) {
+                    orderSkuLookup.set(e.amazon_order_id, e.sku);
+                }
+            }
+        }
+        for (const e of (events || [])) {
+            if (e.event_type === 'fee' && e.amazon_order_id && (!e.sku || e.sku === 'UNKNOWN')) {
+                const resolved = orderSkuLookup.get(e.amazon_order_id);
+                if (resolved) e.sku = resolved;
+            }
+        }
+
         // Get SKU titles
         const { data: skuMaster } = await supabase.from('skus').select('sku, title');
         const titleMap = new Map((skuMaster || []).map((s: any) => [s.sku, s.title]));
@@ -223,6 +239,63 @@ export async function GET(request: Request) {
             f.total = Math.round(f.total * 100) / 100;
         }
 
+        // ── 6. Fee breakdown by Day → SKU ──
+        const feeDaySku: Record<string, Record<string, { sku: string; title: string; fees: Record<string, number>; total: number }>> = {};
+        for (const e of (events || []).filter(e => e.event_type === 'fee')) {
+            const day = (e.posted_date || '').slice(0, 10);
+            const sku = e.sku || 'UNKNOWN';
+            const ft = e.fee_type || 'Other';
+            if (!feeDaySku[day]) feeDaySku[day] = {};
+            if (!feeDaySku[day][sku]) feeDaySku[day][sku] = { sku, title: titleMap.get(sku) || sku, fees: {}, total: 0 };
+            feeDaySku[day][sku].fees[ft] = (feeDaySku[day][sku].fees[ft] || 0) + Math.abs(Number(e.amount));
+            feeDaySku[day][sku].total += Math.abs(Number(e.amount));
+        }
+        // Convert to sorted array
+        const feeDaySkuList = Object.entries(feeDaySku)
+            .sort((a, b) => b[0].localeCompare(a[0]))
+            .map(([date, skus]) => ({
+                date,
+                total: Math.round(Object.values(skus).reduce((s, v) => s + v.total, 0) * 100) / 100,
+                skus: Object.values(skus)
+                    .map(s => ({ ...s, total: Math.round(s.total * 100) / 100, fees: Object.fromEntries(Object.entries(s.fees).map(([k, v]) => [k, Math.round(v * 100) / 100])) }))
+                    .sort((a, b) => b.total - a.total),
+            }));
+
+        // ── 7. MFNPostageFee per-SKU summary ──
+        const mfnBySkuMap: Record<string, { sku: string; title: string; total: number; count: number; revenue: number; units: number }> = {};
+        for (const e of (events || [])) {
+            const sku = e.sku || 'UNKNOWN';
+            if (e.event_type === 'fee' && (e.fee_type === 'MFNPostageFee' || e.fee_type === 'ShippingHB')) {
+                if (!mfnBySkuMap[sku]) {
+                    mfnBySkuMap[sku] = { sku, title: titleMap.get(sku) || sku, total: 0, count: 0, revenue: 0, units: 0 };
+                }
+                mfnBySkuMap[sku].total += Math.abs(Number(e.amount));
+                mfnBySkuMap[sku].count++;
+            }
+            // Also accumulate revenue & units for context
+            if (e.event_type === 'shipment') {
+                if (!mfnBySkuMap[sku]) {
+                    mfnBySkuMap[sku] = { sku, title: titleMap.get(sku) || sku, total: 0, count: 0, revenue: 0, units: 0 };
+                }
+                mfnBySkuMap[sku].revenue += Number(e.amount);
+                mfnBySkuMap[sku].units += Number(e.quantity) || 0;
+            }
+        }
+        const mfnPostageBySku = Object.values(mfnBySkuMap)
+            .filter(s => s.total > 0)
+            .map(s => ({
+                sku: s.sku,
+                title: s.title,
+                postage_total: Math.round(s.total * 100) / 100,
+                event_count: s.count,
+                avg_per_event: s.count > 0 ? Math.round(s.total / s.count * 100) / 100 : 0,
+                postage_per_unit: s.units > 0 ? Math.round(s.total / s.units * 100) / 100 : 0,
+                revenue: Math.round(s.revenue * 100) / 100,
+                units: s.units,
+                pct_of_revenue: s.revenue > 0 ? Math.round(s.total / s.revenue * 10000) / 100 : 0,
+            }))
+            .sort((a, b) => b.postage_total - a.postage_total);
+
         return NextResponse.json({
             period: { start: startStr, end: endStr || 'now' },
             summary: categoryTotals,
@@ -230,6 +303,8 @@ export async function GET(request: Request) {
             sku_breakdown: skuList,
             daily_timeline: dailyTimeline,
             insights,
+            fee_by_day_sku: feeDaySkuList,
+            mfn_postage_by_sku: mfnPostageBySku,
             total_events: (events || []).length,
         });
     } catch (err: any) {

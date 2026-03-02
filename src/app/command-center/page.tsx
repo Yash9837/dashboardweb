@@ -8,6 +8,7 @@ import FinancialBreakdownPanel from '@/components/command-center/FinancialBreakd
 import SKUPerformanceTable from '@/components/command-center/SKUPerformanceTable';
 import InventoryRiskPanel from '@/components/command-center/InventoryRiskPanel';
 import AlertsPanel from '@/components/command-center/AlertsPanel';
+import ClosedSettlementDashboard from '@/components/command-center/ClosedSettlementDashboard';
 import { RevenueState, RevenueStateBreakdown } from '@/lib/types';
 import {
     RefreshCw, AlertCircle, Loader2, CloudDownload, Zap,
@@ -56,8 +57,11 @@ export default function CommandCenterPage() {
     const { data: alertsData, loading: alertsLoading, refresh: refreshAlerts } =
         useFetch<any>('/api/command-center/alerts');
 
+    const { data: closedData, loading: closedLoading, refresh: refreshClosed } =
+        useFetch<any>('/api/command-center/closed-settlement');
+
     const handleRefresh = async () => {
-        await Promise.all([refreshMetrics(), refreshSkus(), refreshAlerts()]);
+        await Promise.all([refreshMetrics(), refreshSkus(), refreshAlerts(), refreshClosed()]);
     };
 
     const handleSync = async () => {
@@ -357,6 +361,17 @@ export default function CommandCenterPage() {
                             netContributionBreakdown={metricsData.net_contribution_breakdown}
                             totalProfitBreakdown={metricsData.total_profit_breakdown}
                         />
+                    )}
+
+                    {/* ── Closed Settlement Dashboard ───────────────────── */}
+                    {!closedLoading && closedData?.summary && (
+                        <div className="rounded-2xl border border-emerald-500/10 bg-emerald-500/[0.02] p-6">
+                            <ClosedSettlementDashboard
+                                summary={closedData.summary}
+                                monthly={closedData.monthly || []}
+                                orders={closedData.orders || []}
+                            />
+                        </div>
                     )}
 
                     {/* ── SKU Performance Table ─────────────────────────── */}

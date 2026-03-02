@@ -4,12 +4,14 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
     LayoutDashboard, BarChart3, DollarSign, Zap, Package, ShoppingCart,
-    Plug, Settings, ChevronLeft, ChevronRight, Command
+    Plug, Settings, ChevronLeft, ChevronRight, Command, Calculator, Lock
 } from 'lucide-react';
 
 const navItems = [
     { label: 'Dashboard', href: '/', icon: LayoutDashboard },
     { label: 'Command Center', href: '/command-center', icon: Command },
+    { label: 'Revenue Calculator', href: '/revenue-calculator', icon: Calculator },
+    { label: 'Financial Status', href: '/command-center/financial-status', icon: Lock },
     { label: 'Analytics', href: '/analytics', icon: BarChart3 },
     { label: 'Sales & Revenue', href: '/sales', icon: DollarSign },
     { label: 'Performance', href: '/performance', icon: Zap },

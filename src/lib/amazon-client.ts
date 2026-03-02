@@ -193,6 +193,78 @@ export async function fetchFinancialEvents(options: FetchFinancialEventsOptions 
 }
 
 /**
+ * Fetch Financial Event Groups from the Finances API.
+ * Each group maps to a settlement period / payout cycle (~14 days).
+ * Auto-paginates through all pages.
+ * Rate limit: ~0.5 req/s — 2s delay between pages.
+ */
+export interface FetchEventGroupsOptions {
+    financialEventGroupStartedAfter?: string;
+    financialEventGroupStartedBefore?: string;
+    maxResultsPerPage?: number;
+}
+
+export async function fetchFinancialEventGroups(options: FetchEventGroupsOptions = {}): Promise<any[]> {
+    const startedAfter = options.financialEventGroupStartedAfter
+        || new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+    const allGroups: any[] = [];
+    let nextToken: string | undefined;
+    let pageCount = 0;
+
+    do {
+        const params: Record<string, string> = {
+            FinancialEventGroupStartedAfter: startedAfter,
+            MaxResultsPerPage: String(options.maxResultsPerPage || 100),
+        };
+        if (options.financialEventGroupStartedBefore) {
+            params.FinancialEventGroupStartedBefore = options.financialEventGroupStartedBefore;
+        }
+        if (nextToken) params.NextToken = nextToken;
+
+        const data = await spApiGet<any>('/finances/v0/financialEventGroups', params);
+        const groups = data.payload?.FinancialEventGroupList || [];
+        allGroups.push(...groups);
+        nextToken = data.payload?.NextToken;
+        pageCount++;
+        console.log(`[EventGroups] Fetched page ${pageCount} (${groups.length} groups)${nextToken ? ', more pages...' : ' (last page)'}`);
+
+        if (nextToken) {
+            await sleep(2000);
+        }
+    } while (nextToken);
+
+    return allGroups;
+}
+
+/**
+ * Fetch financial events for a specific Financial Event Group.
+ * This links events to their settlement period.
+ * Rate limit: ~0.5 req/s.
+ */
+export async function fetchFinancialEventsByGroup(eventGroupId: string): Promise<any> {
+    const allEvents: any[] = [];
+    let nextToken: string | undefined;
+
+    do {
+        const params: Record<string, string> = {};
+        if (nextToken) params.NextToken = nextToken;
+
+        const data = await spApiGet<any>(`/finances/v0/financialEventGroups/${eventGroupId}/financialEvents`, params);
+        const eventList = data.payload?.FinancialEvents;
+        if (eventList) {
+            allEvents.push(eventList);
+        }
+        nextToken = data.payload?.NextToken;
+
+        if (nextToken) {
+            await sleep(2000);
+        }
+    } while (nextToken);
+
+    return allEvents;
+}
+
+/**
  * Fetch catalog item details (title, brand, image) by ASIN
  * Uses persistent file cache — results survive server restarts.
  */

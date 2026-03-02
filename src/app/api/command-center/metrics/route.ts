@@ -350,10 +350,12 @@ function aggregateMetrics(rows: any[]) {
 
 function computeRevenueBreakdown(events: any[]) {
     const now = new Date();
-    const fifteenDaysAgo = new Date(now);
-    fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
+    // At-Risk: delivered within last 30 days (return window still open)
+    // Locked/Closed-Settlement: delivered > 30 days ago (return window permanently closed)
+    const thirtyDaysAgo = new Date(now);
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const breakdown = { pending: 0, at_risk: 0, locked: 0, refunded: 0 };
+    const breakdown = { pending: 0, at_risk: 0, locked: 0, refunded: 0, closed_settlement_count: 0 };
 
     for (const e of events) {
         const amount = Math.abs(Number(e.amount) || 0);
@@ -366,10 +368,13 @@ function computeRevenueBreakdown(events: any[]) {
             breakdown.pending += amount;
         } else {
             const deliveryDate = new Date(e.delivery_date);
-            if (deliveryDate > fifteenDaysAgo) {
+            if (deliveryDate > thirtyDaysAgo) {
+                // Still within 30-day return window → At-Risk
                 breakdown.at_risk += amount;
             } else {
+                // Return window closed → Locked (Closed Settlement)
                 breakdown.locked += amount;
+                breakdown.closed_settlement_count += 1;
             }
         }
     }

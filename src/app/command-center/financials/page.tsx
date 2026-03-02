@@ -2,7 +2,7 @@
 import { useState, useMemo } from 'react';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import { useFetch } from '@/hooks/useFetch';
-import { ArrowLeft, AlertTriangle, Info, TrendingDown, ChevronDown, ChevronUp, Search } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, Info, TrendingDown, ChevronDown, ChevronUp, Search, Calendar } from 'lucide-react';
 import Link from 'next/link';
 import {
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -44,6 +44,8 @@ export default function FinancialDetailsPage() {
     const [useCustom, setUseCustom] = useState(false);
     const [skuSearch, setSkuSearch] = useState('');
     const [expandedSku, setExpandedSku] = useState<string | null>(null);
+    const [expandedDay, setExpandedDay] = useState<string | null>(null);
+    const [feeSkuSearch, setFeeSkuSearch] = useState('');
 
     const dateQuery = useMemo(() => {
         if (useCustom) return `startDate=${customStart}&endDate=${customEnd}`;
@@ -209,6 +211,163 @@ export default function FinancialDetailsPage() {
                             })}
                         </div>
                     </div>
+
+                    {/* ── MFNPostageFee per-SKU Summary ── */}
+                    {data.mfn_postage_by_sku?.length > 0 && (
+                        <div className="bg-white/[0.03] border border-white/10 rounded-xl p-5">
+                            <div className="mb-4">
+                                <h2 className="text-sm font-semibold text-white">📦 FBM Postage (MFNPostageFee) by SKU</h2>
+                                <p className="text-[10px] text-slate-500 mt-0.5">
+                                    Total shipping label costs per SKU — sorted by highest postage spend
+                                </p>
+                            </div>
+
+                            {/* Table Header */}
+                            <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[10px] font-medium text-slate-500 uppercase tracking-wider border-b border-white/5">
+                                <div className="col-span-4">SKU</div>
+                                <div className="col-span-2 text-right">Postage Total</div>
+                                <div className="col-span-1 text-right">Events</div>
+                                <div className="col-span-1 text-right">Units</div>
+                                <div className="col-span-2 text-right">Per Unit</div>
+                                <div className="col-span-2 text-right">% of Rev</div>
+                            </div>
+
+                            {/* Rows */}
+                            <div className="max-h-[400px] overflow-y-auto">
+                                {data.mfn_postage_by_sku.map((s: any) => {
+                                    const maxPostage = data.mfn_postage_by_sku[0]?.postage_total || 1;
+                                    const barWidth = Math.min(100, (s.postage_total / maxPostage) * 100);
+                                    return (
+                                        <div key={s.sku} className="border-b border-white/[0.03]">
+                                            <div className="grid grid-cols-12 gap-2 px-3 py-2.5 items-center hover:bg-white/[0.02] transition-colors">
+                                                <div className="col-span-4 min-w-0">
+                                                    <p className="text-xs font-mono text-slate-300 truncate">{s.sku}</p>
+                                                    <p className="text-[10px] text-slate-600 truncate">{s.title}</p>
+                                                </div>
+                                                <div className="col-span-2 text-right">
+                                                    <span className="text-xs font-semibold text-orange-400">
+                                                        ₹{s.postage_total.toLocaleString('en-IN')}
+                                                    </span>
+                                                </div>
+                                                <div className="col-span-1 text-right text-xs text-slate-400">{s.event_count}</div>
+                                                <div className="col-span-1 text-right text-xs text-slate-400">{s.units || '—'}</div>
+                                                <div className="col-span-2 text-right">
+                                                    <span className="text-xs text-slate-300">
+                                                        {s.postage_per_unit > 0 ? `₹${s.postage_per_unit.toLocaleString('en-IN')}` : '—'}
+                                                    </span>
+                                                </div>
+                                                <div className="col-span-2 text-right">
+                                                    <span className={`text-xs font-medium ${s.pct_of_revenue > 15 ? 'text-red-400' : s.pct_of_revenue > 8 ? 'text-amber-400' : 'text-slate-300'}`}>
+                                                        {s.pct_of_revenue > 0 ? `${s.pct_of_revenue}%` : '—'}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            {/* Visual bar */}
+                                            <div className="mx-3 mb-1 h-0.5 bg-white/5 rounded-full overflow-hidden">
+                                                <div className="h-full bg-orange-500/40 rounded-full transition-all"
+                                                    style={{ width: `${barWidth}%` }} />
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            {/* Totals Row */}
+                            <div className="grid grid-cols-12 gap-2 px-3 py-3 items-center border-t-2 border-orange-500/20 bg-white/[0.03] mt-1">
+                                <div className="col-span-4 text-xs font-bold text-white uppercase tracking-wider">
+                                    Total ({data.mfn_postage_by_sku.length} SKUs)
+                                </div>
+                                <div className="col-span-2 text-right text-xs font-bold text-orange-400">
+                                    ₹{data.mfn_postage_by_sku.reduce((s: number, r: any) => s + r.postage_total, 0).toLocaleString('en-IN')}
+                                </div>
+                                <div className="col-span-1 text-right text-xs font-bold text-white">
+                                    {data.mfn_postage_by_sku.reduce((s: number, r: any) => s + r.event_count, 0)}
+                                </div>
+                                <div className="col-span-1 text-right text-xs font-bold text-white">
+                                    {data.mfn_postage_by_sku.reduce((s: number, r: any) => s + r.units, 0)}
+                                </div>
+                                <div className="col-span-2 text-right text-xs font-bold text-slate-300">
+                                    {(() => {
+                                        const totalUnits = data.mfn_postage_by_sku.reduce((s: number, r: any) => s + r.units, 0);
+                                        const totalPostage = data.mfn_postage_by_sku.reduce((s: number, r: any) => s + r.postage_total, 0);
+                                        return totalUnits > 0 ? `₹${Math.round(totalPostage / totalUnits * 100 / 100).toLocaleString('en-IN')} avg` : '—';
+                                    })()}
+                                </div>
+                                <div className="col-span-2 text-right text-xs font-bold text-slate-300">
+                                    {(() => {
+                                        const totalRev = data.mfn_postage_by_sku.reduce((s: number, r: any) => s + r.revenue, 0);
+                                        const totalPostage = data.mfn_postage_by_sku.reduce((s: number, r: any) => s + r.postage_total, 0);
+                                        return totalRev > 0 ? `${Math.round(totalPostage / totalRev * 10000) / 100}%` : '—';
+                                    })()}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    {data.fee_by_day_sku?.length > 0 && (
+                        <div className="bg-white/[0.03] border border-white/10 rounded-xl p-5">
+                            <div className="flex items-center justify-between mb-4">
+                                <div>
+                                    <h2 className="text-sm font-semibold text-white">Amazon Fees by Day & SKU</h2>
+                                    <p className="text-[10px] text-slate-500 mt-0.5">Click a day to see which SKUs incurred fees and the exact fee types</p>
+                                </div>
+                                <div className="relative">
+                                    <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                                    <input type="text" placeholder="Filter SKU..."
+                                        value={feeSkuSearch} onChange={e => setFeeSkuSearch(e.target.value)}
+                                        className="pl-7 pr-3 py-1.5 text-xs bg-white/5 border border-white/10 rounded-lg text-slate-300 outline-none focus:border-indigo-500/30 w-36" />
+                                </div>
+                            </div>
+
+                            <div className="space-y-1 max-h-[600px] overflow-y-auto">
+                                {data.fee_by_day_sku.map((day: any) => {
+                                    const filteredDaySkus = feeSkuSearch
+                                        ? day.skus.filter((s: any) => s.sku.toLowerCase().includes(feeSkuSearch.toLowerCase()) || s.title.toLowerCase().includes(feeSkuSearch.toLowerCase()))
+                                        : day.skus;
+                                    if (feeSkuSearch && filteredDaySkus.length === 0) return null;
+                                    const isExpanded = expandedDay === day.date;
+                                    return (
+                                        <div key={day.date}>
+                                            <div
+                                                className="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-white/[0.03] cursor-pointer transition-colors"
+                                                onClick={() => setExpandedDay(isExpanded ? null : day.date)}
+                                            >
+                                                <div className="flex items-center gap-3">
+                                                    {isExpanded ? <ChevronUp size={14} className="text-slate-500" /> : <ChevronDown size={14} className="text-slate-500" />}
+                                                    <Calendar size={14} className="text-slate-500" />
+                                                    <span className="text-sm font-medium text-white">{day.date}</span>
+                                                    <span className="text-[10px] text-slate-500">{filteredDaySkus.length} SKUs</span>
+                                                </div>
+                                                <span className="text-sm font-semibold text-red-400">₹{day.total.toLocaleString('en-IN')}</span>
+                                            </div>
+
+                                            {isExpanded && (
+                                                <div className="ml-8 border-l-2 border-red-500/20 space-y-0.5 pb-2">
+                                                    {filteredDaySkus.map((sku: any) => (
+                                                        <div key={sku.sku} className="pl-4 py-2 hover:bg-white/[0.02] rounded-r-lg transition-colors">
+                                                            <div className="flex items-center justify-between mb-1">
+                                                                <div className="min-w-0 flex-1">
+                                                                    <p className="text-xs font-mono text-slate-300 truncate">{sku.sku}</p>
+                                                                    <p className="text-[10px] text-slate-600 truncate">{sku.title}</p>
+                                                                </div>
+                                                                <span className="text-xs font-semibold text-red-400 shrink-0 ml-2">₹{sku.total.toLocaleString('en-IN')}</span>
+                                                            </div>
+                                                            <div className="flex flex-wrap gap-1.5 mt-1">
+                                                                {Object.entries(sku.fees).sort((a: any, b: any) => b[1] - a[1]).map(([feeType, amt]: any) => (
+                                                                    <span key={feeType} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 bg-red-500/10 border border-red-500/10 text-red-300 rounded-full">
+                                                                        {feeType}: ₹{amt.toLocaleString('en-IN')}
+                                                                    </span>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
 
                     {/* ── Daily Timeline Chart ── */}
                     {data.daily_timeline?.length > 1 && (

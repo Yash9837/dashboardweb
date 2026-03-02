@@ -4,9 +4,12 @@ import {
     fetchAmazonInventory,
     fetchAllListings,
     fetchFinancialEvents,
+    fetchFinancialEventGroups,
+    fetchFinancialEventsByGroup,
     checkAmazonConnection,
 } from '@/lib/amazon-client';
 import { supabase } from '@/lib/supabase';
+import { detectClosedOrders } from '@/lib/order-lifecycle-engine';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -284,6 +287,32 @@ async function syncFinancialEvents(postedAfter: string): Promise<number> {
         dedupedRows.push(row);
     }
 
+    // ── Resolve missing SKUs for fee events (MFNPostageFee etc.) ──
+    // Build order_id → SKU map from shipment events in this batch
+    const orderSkuMap = new Map<string, string>();
+    for (const row of dedupedRows) {
+        if (row.event_type === 'shipment' && row.amazon_order_id && row.sku && row.sku !== 'UNKNOWN') {
+            // If order has multiple SKUs, first one wins (most common case is single-item orders)
+            if (!orderSkuMap.has(row.amazon_order_id)) {
+                orderSkuMap.set(row.amazon_order_id, row.sku);
+            }
+        }
+    }
+    // Resolve null/UNKNOWN SKUs on fee events that have an order_id
+    let resolvedCount = 0;
+    for (const row of dedupedRows) {
+        if (row.event_type === 'fee' && row.amazon_order_id && (!row.sku || row.sku === 'UNKNOWN')) {
+            const resolvedSku = orderSkuMap.get(row.amazon_order_id);
+            if (resolvedSku) {
+                row.sku = resolvedSku;
+                resolvedCount++;
+            }
+        }
+    }
+    if (resolvedCount > 0) {
+        console.log(`[Sync] Resolved ${resolvedCount} fee events to their order's SKU`);
+    }
+
     // Idempotent insert: delete existing by reference_id, then insert
     if (dedupedRows.length > 0) {
         const refIds = [...new Set(dedupedRows.map(r => r.reference_id).filter(Boolean))];
@@ -356,7 +385,210 @@ async function syncInventory(): Promise<number> {
     return snapshotRows.length;
 }
 
-// ─── Step 5: Compute aggregations ────────────────────────────────────────────
+// ─── Step 5: Sync Financial Event Groups (Settlements) ─────────────────────
+
+async function syncSettlements(postedAfter: string): Promise<{ groups: number; items: number; linked: number }> {
+    const eventGroups = await fetchFinancialEventGroups({
+        financialEventGroupStartedAfter: postedAfter,
+    });
+
+    if (eventGroups.length === 0) {
+        return { groups: 0, items: 0, linked: 0 };
+    }
+
+    // ── Upsert financial_event_groups ──
+    const groupRows = eventGroups.map((g: any) => ({
+        event_group_id: g.FinancialEventGroupId,
+        account_id: 'default',
+        processing_status: g.ProcessingStatus || 'Open',
+        fund_transfer_status: g.FundTransferStatus || 'Initiated',
+        fund_transfer_date: g.FundTransferDate || null,
+        original_total: toAmount(g.OriginalTotal),
+        beginning_balance: toAmount(g.BeginningBalance),
+        trace_id: g.TraceId || null,
+    }));
+
+    for (let i = 0; i < groupRows.length; i += 200) {
+        const chunk = groupRows.slice(i, i + 200);
+        const { error } = await supabase
+            .from('financial_event_groups')
+            .upsert(chunk, { onConflict: 'event_group_id', ignoreDuplicates: false });
+        if (error) console.error('Event groups upsert error:', error.message);
+    }
+
+    // ── Upsert settlement_periods (one per group) ──
+    const settlementRows = eventGroups.map((g: any) => ({
+        settlement_id: g.FinancialEventGroupId,
+        account_id: 'default',
+        financial_event_group_start: g.FinancialEventGroupStart || null,
+        financial_event_group_end: g.FinancialEventGroupEnd || null,
+        fund_transfer_date: g.FundTransferDate || null,
+        original_total: toAmount(g.OriginalTotal),
+        converted_total: toAmount(g.ConvertedTotal || g.OriginalTotal),
+        currency: g.OriginalTotal?.CurrencyCode || g.ConvertedTotal?.CurrencyCode || 'INR',
+        processing_status: g.ProcessingStatus === 'Closed' ? 'Closed' : 'Open',
+    }));
+
+    for (let i = 0; i < settlementRows.length; i += 200) {
+        const chunk = settlementRows.slice(i, i + 200);
+        const { error } = await supabase
+            .from('settlement_periods')
+            .upsert(chunk, { onConflict: 'settlement_id', ignoreDuplicates: false });
+        if (error) console.error('Settlement periods upsert error:', error.message);
+    }
+
+    // ── Fetch per-group events and build settlement_items ──
+    let totalItems = 0;
+    let totalLinked = 0;
+
+    // Only fetch detailed events for groups we haven't fully processed yet
+    // (Open groups or recently closed ones)
+    const groupsToDetail = eventGroups.filter((g: any) =>
+        g.ProcessingStatus === 'Open' ||
+        (g.ProcessingStatus === 'Closed' && g.FundTransferDate &&
+            new Date(g.FundTransferDate).getTime() > Date.now() - 60 * 24 * 60 * 60 * 1000)
+    );
+
+    for (const group of groupsToDetail) {
+        const groupId = group.FinancialEventGroupId;
+        try {
+            const eventPages = await fetchFinancialEventsByGroup(groupId);
+            const itemRows: any[] = [];
+
+            for (const page of eventPages) {
+                // Process shipment events → Order items
+                for (const evt of (page.ShipmentEventList || [])) {
+                    for (const item of (evt.ShipmentItemList || [])) {
+                        for (const charge of (item.ItemChargeList || [])) {
+                            const amount = toAmount(charge.ChargeAmount);
+                            if (amount === 0) continue;
+                            itemRows.push({
+                                settlement_id: groupId,
+                                amazon_order_id: evt.AmazonOrderId || null,
+                                sku: item.SellerSKU || null,
+                                transaction_type: 'Order',
+                                amount_type: 'ItemPrice',
+                                amount_description: charge.ChargeType || 'Principal',
+                                amount,
+                                quantity: item.QuantityShipped || 1,
+                                posted_date: evt.PostedDate,
+                            });
+                        }
+                        for (const fee of (item.ItemFeeList || [])) {
+                            const amount = toAmount(fee.FeeAmount);
+                            if (amount === 0) continue;
+                            itemRows.push({
+                                settlement_id: groupId,
+                                amazon_order_id: evt.AmazonOrderId || null,
+                                sku: item.SellerSKU || null,
+                                transaction_type: 'Order',
+                                amount_type: 'ItemFees',
+                                amount_description: fee.FeeType || 'Fee',
+                                amount,
+                                quantity: 0,
+                                posted_date: evt.PostedDate,
+                            });
+                        }
+                    }
+                }
+
+                // Process refund events
+                for (const evt of (page.RefundEventList || [])) {
+                    for (const item of (evt.ShipmentItemAdjustmentList || evt.ShipmentItemList || [])) {
+                        for (const charge of (item.ItemChargeAdjustmentList || item.ItemChargeList || [])) {
+                            const amount = toAmount(charge.ChargeAmount);
+                            if (amount === 0) continue;
+                            itemRows.push({
+                                settlement_id: groupId,
+                                amazon_order_id: evt.AmazonOrderId || null,
+                                sku: item.SellerSKU || null,
+                                transaction_type: 'Refund',
+                                amount_type: 'ItemPrice',
+                                amount_description: charge.ChargeType || 'RefundPrincipal',
+                                amount,
+                                quantity: -(item.QuantityShipped || 1),
+                                posted_date: evt.PostedDate,
+                            });
+                        }
+                    }
+                }
+
+                // Process service fee events
+                for (const evt of (page.ServiceFeeEventList || [])) {
+                    for (const fee of (evt.FeeList || [])) {
+                        const amount = toAmount(fee.FeeAmount);
+                        if (amount === 0) continue;
+                        itemRows.push({
+                            settlement_id: groupId,
+                            amazon_order_id: evt.AmazonOrderId || null,
+                            sku: evt.SellerSKU || null,
+                            transaction_type: 'ServiceFee',
+                            amount_type: 'Other',
+                            amount_description: fee.FeeType || evt.FeeReason || 'ServiceFee',
+                            amount,
+                            quantity: 0,
+                            posted_date: null,
+                        });
+                    }
+                }
+
+                // Process adjustment events
+                for (const evt of (page.AdjustmentEventList || [])) {
+                    for (const item of (evt.AdjustmentItemList || [])) {
+                        const amount = toAmount(item.TotalAmount);
+                        if (amount === 0) continue;
+                        itemRows.push({
+                            settlement_id: groupId,
+                            amazon_order_id: null,
+                            sku: item.SellerSKU || null,
+                            transaction_type: 'Adjustment',
+                            amount_type: 'Other',
+                            amount_description: evt.AdjustmentType || 'Adjustment',
+                            amount,
+                            quantity: item.Quantity || 0,
+                            posted_date: evt.PostedDate,
+                        });
+                    }
+                }
+            }
+
+            // Delete existing items for this group, then insert fresh
+            if (itemRows.length > 0) {
+                await supabase.from('settlement_items').delete().eq('settlement_id', groupId);
+                for (let i = 0; i < itemRows.length; i += 200) {
+                    const chunk = itemRows.slice(i, i + 200);
+                    const { error } = await supabase.from('settlement_items').insert(chunk);
+                    if (error) console.error(`Settlement items insert error (${groupId}):`, error.message);
+                }
+                totalItems += itemRows.length;
+            }
+
+            // Link financial_events to this event group
+            // Match by posted_date within the group's time window
+            if (group.FinancialEventGroupStart && group.FinancialEventGroupEnd) {
+                const { data: linked, error: linkErr } = await supabase
+                    .from('financial_events')
+                    .update({ event_group_id: groupId })
+                    .gte('posted_date', group.FinancialEventGroupStart)
+                    .lte('posted_date', group.FinancialEventGroupEnd)
+                    .is('event_group_id', null)
+                    .select('id');
+                if (!linkErr && linked) {
+                    totalLinked += linked.length;
+                }
+            }
+
+            // Small delay between groups to respect rate limits
+            await sleep(1000);
+        } catch (err: any) {
+            console.error(`[Sync] Failed to fetch events for group ${groupId}:`, err.message);
+        }
+    }
+
+    return { groups: eventGroups.length, items: totalItems, linked: totalLinked };
+}
+
+// ─── Step 6: Compute aggregations ────────────────────────────────────────────
 
 async function computeAggregations(): Promise<void> {
     const now = new Date();
@@ -532,7 +764,7 @@ async function computeAggregations(): Promise<void> {
     }
 }
 
-// ─── Step 6: Compute inventory health + alerts ───────────────────────────────
+// ─── Step 7: Compute inventory health + alerts ───────────────────────────────
 
 async function computeInventoryHealth(): Promise<void> {
     const { data: snapshots } = await supabase
@@ -821,19 +1053,19 @@ export async function POST(request: Request) {
         }
 
         // Step 1: Sync SKU catalog from listings report
-        console.log('[Sync] Step 1/6: Syncing SKU catalog...');
+        console.log('[Sync] Step 1/8: Syncing SKU catalog...');
         const skuMap = await syncSkus();
         results.skus = skuMap.size;
         steps.push(`${skuMap.size} SKUs synced`);
 
         // Step 2: Sync orders (metadata only — no item fetching!)
-        console.log('[Sync] Step 2/6: Syncing orders...');
+        console.log('[Sync] Step 2/8: Syncing orders...');
         const ordersCount = await syncOrders(daysBack);
         results.orders = ordersCount;
         steps.push(`${ordersCount} orders synced`);
 
         // Step 3: Sync financial events from Finances API (SOURCE OF TRUTH)
-        console.log('[Sync] Step 3/6: Fetching financial events from Finances API...');
+        console.log('[Sync] Step 3/8: Fetching financial events from Finances API...');
         const eventsCount = await syncFinancialEvents(postedAfter);
         results.financial_events = eventsCount;
         steps.push(`${eventsCount} financial events ingested`);
@@ -842,22 +1074,60 @@ export async function POST(request: Request) {
         }
 
         // Step 4: Sync inventory snapshots
-        console.log('[Sync] Step 4/6: Syncing inventory...');
+        console.log('[Sync] Step 4/8: Syncing inventory...');
         results.inventory_snapshots = await syncInventory();
         steps.push(`${results.inventory_snapshots} inventory snapshots`);
         if (results.inventory_snapshots === 0) {
             warnings.push('No inventory snapshots ingested in this run.');
         }
 
-        // Step 5: Compute aggregations
-        console.log('[Sync] Step 5/6: Computing aggregations...');
+        // Step 5: Sync Financial Event Groups (Settlements)
+        console.log('[Sync] Step 5/8: Syncing settlement event groups...');
+        try {
+            const settlementResult = await syncSettlements(postedAfter);
+            results.settlement_groups = settlementResult.groups;
+            results.settlement_items = settlementResult.items;
+            results.settlement_events_linked = settlementResult.linked;
+            steps.push(`${settlementResult.groups} settlement groups, ${settlementResult.items} settlement items, ${settlementResult.linked} events linked`);
+        } catch (settleErr: any) {
+            console.error('[Sync] Settlement sync failed (non-fatal):', settleErr.message);
+            warnings.push(`Settlement sync failed: ${settleErr.message}`);
+            results.settlement_groups = 0;
+        }
+
+        // Step 6: Compute aggregations
+        console.log('[Sync] Step 6/8: Computing aggregations...');
         await computeAggregations();
         results.aggregations_computed = true;
 
-        // Step 6: Compute inventory health + generate alerts
-        console.log('[Sync] Step 6/6: Computing inventory health & alerts...');
+        // Step 7: Compute inventory health + generate alerts
+        console.log('[Sync] Step 7/8: Computing inventory health & alerts...');
         await computeInventoryHealth();
         results.inventory_health_computed = true;
+
+        // Step 8: Detect financially closed orders
+        console.log('[Sync] Step 8/8: Running closed order detection...');
+        try {
+            const lifecycleResult = await detectClosedOrders('sync');
+            results.lifecycle = {
+                orders_processed: lifecycleResult.orders_processed,
+                orders_closed: lifecycleResult.orders_closed,
+                orders_promoted: lifecycleResult.orders_promoted,
+                state_transitions: lifecycleResult.state_transitions,
+                duration_ms: lifecycleResult.duration_ms,
+            };
+            steps.push(
+                `Lifecycle: ${lifecycleResult.orders_processed} processed, ` +
+                `${lifecycleResult.orders_closed} closed, ` +
+                `${lifecycleResult.orders_promoted} promoted`
+            );
+            if (lifecycleResult.errors.length > 0) {
+                warnings.push(`Lifecycle warnings: ${lifecycleResult.errors.join('; ')}`);
+            }
+        } catch (lifecycleErr: any) {
+            console.error('[Sync] Closed order detection failed (non-fatal):', lifecycleErr.message);
+            warnings.push(`Closed order detection failed: ${lifecycleErr.message}`);
+        }
 
         // Update last synced timestamp
         await setLastSyncedAt(new Date().toISOString());
