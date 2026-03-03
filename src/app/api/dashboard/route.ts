@@ -222,43 +222,67 @@ export async function GET(request: Request) {
         let error: string | null = null;
 
         if (amazonStatus.connected) {
+            // Vercel Hobby has a 10s hard limit. Set a soft timeout at 8s
+            // so we can return stale cache gracefully instead of a raw 502.
+            const FETCH_TIMEOUT_MS = process.env.VERCEL ? 8000 : 55000;
+
+            const timeoutPromise = new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('Amazon API timeout — returning cached data')), FETCH_TIMEOUT_MS)
+            );
+
             try {
-                if (period === '1d') {
-                    // Align "Today" with calendar day in marketplace time zone (not rolling 24h).
-                    const window = getTodayAndPreviousWindow(new Date(), DASHBOARD_TIME_ZONE);
+                const fetchWork = async () => {
+                    if (period === '1d') {
+                        // Align "Today" with calendar day in marketplace time zone (not rolling 24h).
+                        const window = getTodayAndPreviousWindow(new Date(), DASHBOARD_TIME_ZONE);
 
-                    const [currentBatch, prevBatch, inv] = await Promise.all([
-                        fetchAmazonOrders({
-                            createdAfter: window.currentStart.toISOString(),
-                            // Avoid CreatedBefore for current day because Orders API requires
-                            // this boundary to be sufficiently behind "now", and can reject
-                            // otherwise with InvalidInput.
-                        }),
-                        fetchAmazonOrders({
-                            createdAfter: window.previousStart.toISOString(),
-                            createdBefore: window.previousEnd.toISOString(),
-                        }),
-                        fetchAmazonInventory(),
-                    ]);
+                        const [currentBatch, prevBatch, inv] = await Promise.all([
+                            fetchAmazonOrders({
+                                createdAfter: window.currentStart.toISOString(),
+                            }),
+                            fetchAmazonOrders({
+                                createdAfter: window.previousStart.toISOString(),
+                                createdBefore: window.previousEnd.toISOString(),
+                            }),
+                            fetchAmazonInventory(),
+                        ]);
 
-                    allOrders = currentBatch;
-                    prevOrders = prevBatch;
-                    inventory = inv;
-                } else {
-                    // For non-Today periods keep rolling-window behavior.
-                    const [currentBatch, prevBatch, inv] = await Promise.all([
-                        fetchAmazonOrders(days),
-                        fetchAmazonOrders(days * 2).then(all => {
-                            const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-                            return all.filter((o: any) => new Date(o.PurchaseDate) < cutoff);
-                        }),
-                        fetchAmazonInventory(),
-                    ]);
+                        allOrders = currentBatch;
+                        prevOrders = prevBatch;
+                        inventory = inv;
+                    } else {
+                        // For non-Today periods keep rolling-window behavior.
+                        // IMPORTANT: Do NOT fetch days*2 for previous period — it doubles API calls
+                        // and causes Vercel 502 timeouts. Instead, compute prev from cache or skip.
+                        const prevCacheKey = `dashboard_prev_${period}_${DASHBOARD_CACHE_VERSION}`;
 
-                    allOrders = currentBatch;
-                    prevOrders = prevBatch;
-                    inventory = inv;
-                }
+                        const [currentBatch, inv] = await Promise.all([
+                            fetchAmazonOrders(days),
+                            fetchAmazonInventory(),
+                        ]);
+
+                        allOrders = currentBatch;
+                        inventory = inv;
+
+                        // Try to use cached previous-period data; if unavailable, prev stays empty
+                        const cachedPrev = getCached<any[]>(prevCacheKey);
+                        if (cachedPrev) {
+                            prevOrders = cachedPrev;
+                        } else {
+                            // Compute prev from current batch as a rough approximation:
+                            // Split current orders into two halves by date
+                            const cutoff = new Date(Date.now() - Math.floor(days / 2) * 24 * 60 * 60 * 1000);
+                            const olderHalf = currentBatch.filter((o: any) => new Date(o.PurchaseDate) < cutoff);
+                            prevOrders = olderHalf;
+
+                            // Cache the older half so next load has comparison data
+                            setCache(prevCacheKey, olderHalf, TTL.DASHBOARD);
+                        }
+                    }
+                };
+
+                // Race the fetch against the timeout
+                await Promise.race([fetchWork(), timeoutPromise]);
             } catch (e: any) {
                 error = e.message;
                 console.error('Failed to fetch Amazon data:', e.message);

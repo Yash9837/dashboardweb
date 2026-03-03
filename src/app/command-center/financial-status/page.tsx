@@ -263,6 +263,21 @@ export default function FinancialStatusPage() {
         return sorted;
     }, [records, sortBy, sortDir]);
 
+    // Group sorted records by order_id for visual grouping
+    const groupedRecords = useMemo(() => {
+        const groups: { orderId: string; items: OrderRevenueRecord[] }[] = [];
+        let currentGroup: { orderId: string; items: OrderRevenueRecord[] } | null = null;
+        for (const r of sortedRecords) {
+            if (!currentGroup || currentGroup.orderId !== r.order_id) {
+                currentGroup = { orderId: r.order_id, items: [r] };
+                groups.push(currentGroup);
+            } else {
+                currentGroup.items.push(r);
+            }
+        }
+        return groups;
+    }, [sortedRecords]);
+
     const handleSort = (field: string) => {
         if (sortBy === field) setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
         else { setSortBy(field); setSortDir('desc'); }
@@ -775,38 +790,107 @@ export default function FinancialStatusPage() {
 
                     {/* Table Body */}
                     <div className="max-h-[600px] overflow-y-auto">
-                        {sortedRecords.map((r: OrderRevenueRecord) => {
-                            const key = `${r.order_id}|${r.sku}`;
-                            const isExpanded = expandedRow === key;
-                            const calc = r.calculations;
+                        {groupedRecords.map((group) => {
+                            const isMultiItem = group.items.length > 1;
+                            // Order-level totals for multi-item orders
+                            const orderTotal = isMultiItem ? {
+                                qty: group.items.reduce((s, r) => s + r.quantity, 0),
+                                gross: group.items.reduce((s, r) => s + r.calculations.gross_revenue, 0),
+                                fees: group.items.reduce((s, r) => s + r.calculations.total_fees, 0),
+                                taxes: group.items.reduce((s, r) => s + r.taxes.total, 0),
+                                refund: group.items.reduce((s, r) => s + r.return_details.total_refund_impact, 0),
+                                net: group.items.reduce((s, r) => s + r.calculations.net_settlement, 0),
+                            } : null;
+
                             return (
-                                <div key={key}>
-                                    <div className="grid grid-cols-[2.5fr_0.6fr_1fr_1fr_0.8fr_0.8fr_1fr_1fr_0.8fr_0.9fr] gap-2 px-4 py-3 items-center hover:bg-white/[0.02] cursor-pointer border-b border-white/[0.03] transition-colors"
-                                        onClick={() => setExpandedRow(isExpanded ? null : key)}>
-                                        <div className="flex items-center gap-2 min-w-0">
-                                            {isExpanded ? <ChevronUp size={12} className="text-slate-500 shrink-0" /> : <ChevronDown size={12} className="text-slate-500 shrink-0" />}
-                                            <div className="min-w-0">
-                                                <p className="text-xs font-mono text-slate-300 truncate">{r.order_id}</p>
-                                                <p className="text-[10px] text-slate-600 truncate">{r.sku} · {r.product_name}</p>
+                                <div key={group.orderId} className={isMultiItem ? 'border-b border-white/[0.06]' : ''}>
+                                    {/* Multi-item: Order header row */}
+                                    {isMultiItem && (
+                                        <div className="grid grid-cols-[2.5fr_0.6fr_1fr_1fr_0.8fr_0.8fr_1fr_1fr_0.8fr_0.9fr] gap-2 px-4 py-2.5 items-center bg-white/[0.02] border-b border-white/[0.04]">
+                                            <div className="flex items-center gap-2 min-w-0">
+                                                <Package size={12} className="text-indigo-400 shrink-0" />
+                                                <div className="min-w-0">
+                                                    <p className="text-xs font-mono text-white font-semibold truncate">{group.orderId}</p>
+                                                    <p className="text-[10px] text-indigo-400">{group.items.length} items in this order</p>
+                                                </div>
+                                            </div>
+                                            <div className="text-center text-xs text-white font-semibold">{orderTotal!.qty}</div>
+                                            <div className="text-right text-xs font-semibold text-emerald-400">{fmtExact(orderTotal!.gross)}</div>
+                                            <div className="text-right text-xs font-semibold text-red-400">{orderTotal!.fees > 0 ? fmtExact(orderTotal!.fees) : '—'}</div>
+                                            <div className="text-right text-xs font-semibold text-orange-400">{orderTotal!.taxes > 0 ? fmtExact(orderTotal!.taxes) : '—'}</div>
+                                            <div className="text-right text-xs font-semibold text-amber-400">{orderTotal!.refund > 0 ? fmtExact(orderTotal!.refund) : '—'}</div>
+                                            <div className={`text-right text-xs font-bold ${orderTotal!.net >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{fmtExact(orderTotal!.net)}</div>
+                                            <div className="text-center">
+                                                <StatusBadge status={group.items[0].order_status} returnType={group.items[0].return_details.return_type} />
+                                            </div>
+                                            <div className="text-center">
+                                                <FinancialStatusBadge status={group.items[0].financial_status} />
+                                            </div>
+                                            <div className="text-center">
+                                                <TxnTypeBadge types={group.items[0].transaction_types} />
                                             </div>
                                         </div>
-                                        <div className="text-center text-xs text-slate-300">{r.quantity}</div>
-                                        <div className="text-right text-xs font-medium text-emerald-400">{fmtExact(calc.gross_revenue)}</div>
-                                        <div className="text-right text-xs font-medium text-red-400">{calc.total_fees > 0 ? fmtExact(calc.total_fees) : '—'}</div>
-                                        <div className="text-right text-xs text-orange-400">{r.taxes.total > 0 ? fmtExact(r.taxes.total) : '—'}</div>
-                                        <div className="text-right text-xs text-amber-400">{r.return_details.total_refund_impact > 0 ? fmtExact(r.return_details.total_refund_impact) : '—'}</div>
-                                        <div className={`text-right text-xs font-bold ${calc.net_settlement >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{fmtExact(calc.net_settlement)}</div>
-                                        <div className="text-center">
-                                            <StatusBadge status={r.order_status} returnType={r.return_details.return_type} />
-                                        </div>
-                                        <div className="text-center">
-                                            <FinancialStatusBadge status={r.financial_status} />
-                                        </div>
-                                        <div className="text-center">
-                                            <TxnTypeBadge types={r.transaction_types} />
-                                        </div>
-                                    </div>
-                                    {isExpanded && <OrderDetailPanel record={r} />}
+                                    )}
+
+                                    {/* Item rows */}
+                                    {group.items.map((r, idx) => {
+                                        const key = `${r.order_id}|${r.sku}`;
+                                        const isExpanded = expandedRow === key;
+                                        const calc = r.calculations;
+                                        return (
+                                            <div key={key}>
+                                                <div className={`grid grid-cols-[2.5fr_0.6fr_1fr_1fr_0.8fr_0.8fr_1fr_1fr_0.8fr_0.9fr] gap-2 px-4 py-3 items-center hover:bg-white/[0.02] cursor-pointer border-b border-white/[0.03] transition-colors ${isMultiItem ? 'pl-8' : ''}`}
+                                                    onClick={() => setExpandedRow(isExpanded ? null : key)}>
+                                                    <div className="flex items-center gap-2 min-w-0">
+                                                        {isMultiItem ? (
+                                                            <span className="flex items-center gap-1">
+                                                                <span className="text-[10px] text-slate-600 shrink-0 w-3 text-center">{idx + 1}.</span>
+                                                                {isExpanded ? <ChevronUp size={10} className="text-slate-600 shrink-0" /> : <ChevronDown size={10} className="text-slate-600 shrink-0" />}
+                                                            </span>
+                                                        ) : (
+                                                            isExpanded ? <ChevronUp size={12} className="text-slate-500 shrink-0" /> : <ChevronDown size={12} className="text-slate-500 shrink-0" />
+                                                        )}
+                                                        <div className="min-w-0">
+                                                            {!isMultiItem && (
+                                                                <p className="text-xs font-mono text-slate-300 truncate">{r.order_id}</p>
+                                                            )}
+                                                            <p className={`text-[10px] truncate ${isMultiItem ? 'text-slate-300' : 'text-slate-600'}`}>
+                                                                <span className="text-slate-500">{r.sku}</span> · {r.product_name}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-center text-xs text-slate-300">{r.quantity}</div>
+                                                    <div className="text-right text-xs font-medium text-emerald-400">{fmtExact(calc.gross_revenue)}</div>
+                                                    <div className="text-right text-xs font-medium text-red-400">{calc.total_fees > 0 ? fmtExact(calc.total_fees) : '—'}</div>
+                                                    <div className="text-right text-xs text-orange-400">{r.taxes.total > 0 ? fmtExact(r.taxes.total) : '—'}</div>
+                                                    <div className="text-right text-xs text-amber-400">{r.return_details.total_refund_impact > 0 ? fmtExact(r.return_details.total_refund_impact) : '—'}</div>
+                                                    <div className={`text-right text-xs font-bold ${calc.net_settlement >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{fmtExact(calc.net_settlement)}</div>
+                                                    {!isMultiItem ? (
+                                                        <>
+                                                            <div className="text-center">
+                                                                <StatusBadge status={r.order_status} returnType={r.return_details.return_type} />
+                                                            </div>
+                                                            <div className="text-center">
+                                                                <FinancialStatusBadge status={r.financial_status} />
+                                                            </div>
+                                                            <div className="text-center">
+                                                                <TxnTypeBadge types={r.transaction_types} />
+                                                            </div>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <div />
+                                                            <div />
+                                                            <div className="text-center">
+                                                                <TxnTypeBadge types={r.transaction_types} />
+                                                            </div>
+                                                        </>
+                                                    )}
+                                                </div>
+                                                {isExpanded && <OrderDetailPanel record={r} />}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             );
                         })}
