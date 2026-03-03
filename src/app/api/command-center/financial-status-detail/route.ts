@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { calculateRevenue, type FinancialEvent } from '@/lib/revenue-engine';
 import {
   detectClosedOrders,
@@ -11,15 +11,15 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
-const PERIOD_DAYS: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90, '180d': 180 };
-
 /**
  * Financial Status Detail API — Closed & Settled Orders
  *
- * Closure rule: DeliveryDate + 30 days < Today AND no refund = FINANCIALLY_CLOSED
+ * Closure rule: DeliveryDate + 30 days < Today = FINANCIALLY_CLOSED
  *
  * GET params:
- *   period=90d            → Time range
+ *   startDate=YYYY-MM-DD  → Filter orders purchased on or after this date
+ *   endDate=YYYY-MM-DD    → Filter orders purchased on or before this date
+ *                            (if both omitted → ALL orders, no date filter)
  *   status=all|DELIVERED_PENDING_SETTLEMENT|FINANCIALLY_CLOSED
  *   search=               → Search by order_id or SKU
  *   page=1, pageSize=50   → Pagination
@@ -40,54 +40,53 @@ export async function GET(request: Request) {
       return NextResponse.json({ success: true, stats, runs });
     }
 
-    const period = searchParams.get('period') || '90d';
     const statusFilter = searchParams.get('status') || 'all';
     const search = searchParams.get('search') || '';
     const page = parseInt(searchParams.get('page') || '1');
     const pageSize = parseInt(searchParams.get('pageSize') || '50');
 
-    // ── Date range ──
-    const days = PERIOD_DAYS[period] || 90;
-    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const startStr = startDate.toISOString().split('T')[0];
-    const endStr = new Date().toISOString().split('T')[0];
+    // ── Date range (optional — omit both for all-time) ──
+    const startDateParam = searchParams.get('startDate');
+    const endDateParam = searchParams.get('endDate');
+    const hasDateFilter = !!(startDateParam || endDateParam);
+    // Default: all time (earliest possible to today)
+    const startStr = startDateParam || '2020-01-01';
+    const endStr = endDateParam || new Date().toISOString().split('T')[0];
 
-    // ── 1. Fetch financial events for period ──
+    // ── 1. Fetch financial events ──
+    // Events may be posted well after purchase date (fees, refunds, settlements arrive later).
+    // So always fetch events from startStr to TODAY to capture all events for orders in range.
+    const eventsEndStr = new Date().toISOString().split('T')[0];
     const baseSelect = 'event_type, amount, quantity, fee_type, sku, amazon_order_id, posted_date, delivery_date, reference_id';
     const extSelect = baseSelect + ', event_group_id, transaction_type, amount_description';
 
     let rawEvents: any[] | null = null;
     let useExtended = true;
 
-    {
-      const q = supabase
-        .from('financial_events')
-        .select(extSelect)
-        .gte('posted_date', startStr)
-        .lte('posted_date', endStr + 'T23:59:59')
-        .order('posted_date', { ascending: false });
-      const { data, error: evErr } = await q;
-      if (evErr) {
-        if (evErr.message?.includes('column') || evErr.code === '42703') {
-          useExtended = false;
-        } else {
-          throw evErr;
-        }
+    try {
+      rawEvents = await fetchAllRows(
+        'financial_events',
+        extSelect,
+        q => q.gte('posted_date', startStr).lte('posted_date', eventsEndStr + 'T23:59:59'),
+        'posted_date',
+        false,
+      );
+    } catch (evErr: any) {
+      if (evErr?.message?.includes('column') || evErr?.code === '42703') {
+        useExtended = false;
       } else {
-        rawEvents = data;
+        throw evErr;
       }
     }
 
     if (!useExtended) {
-      const q = supabase
-        .from('financial_events')
-        .select(baseSelect)
-        .gte('posted_date', startStr)
-        .lte('posted_date', endStr + 'T23:59:59')
-        .order('posted_date', { ascending: false });
-      const { data, error: evErr } = await q;
-      if (evErr) throw evErr;
-      rawEvents = data;
+      rawEvents = await fetchAllRows(
+        'financial_events',
+        baseSelect,
+        q => q.gte('posted_date', startStr).lte('posted_date', eventsEndStr + 'T23:59:59'),
+        'posted_date',
+        false,
+      );
     }
 
     const events: FinancialEvent[] = (rawEvents || []).map((e: any) => ({
@@ -348,7 +347,7 @@ export async function GET(request: Request) {
         totalRecords,
         totalPages,
       },
-      period: { start: startStr, end: endStr },
+      dateRange: { start: startStr, end: endStr, filtered: hasDateFilter },
     });
   } catch (err: any) {
     console.error('[Financial Status Detail]', err?.message?.slice?.(0, 200) || err);

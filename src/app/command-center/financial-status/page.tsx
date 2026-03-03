@@ -81,7 +81,7 @@ interface FSResponse {
     lifecycle: LifecycleData;
     distribution: Record<string, number>;
     pagination: { page: number; pageSize: number; totalRecords: number; totalPages: number };
-    period: { start: string; end: string };
+    dateRange: { start: string; end: string; filtered: boolean };
 }
 
 interface StatsResponse {
@@ -91,12 +91,6 @@ interface StatsResponse {
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
-const PERIODS = [
-    { key: '30d', label: '30D' },
-    { key: '90d', label: '90D' },
-    { key: '180d', label: '180D' },
-];
 
 const STATUS_TABS = [
     { key: 'FINANCIALLY_CLOSED', label: '🔒 Financially Closed', icon: Lock, solid: true },
@@ -207,7 +201,8 @@ function TxnTypeBadge({ types }: { types: string[] }) {
 // ── Main Page ────────────────────────────────────────────────────────────────
 
 export default function FinancialStatusPage() {
-    const [period, setPeriod] = useState('90d');
+    const [startDate, setStartDate] = useState('');
+    const [endDate, setEndDate] = useState('');
     const [statusFilter, setStatusFilter] = useState('FINANCIALLY_CLOSED');
     const [search, setSearch] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
@@ -218,16 +213,19 @@ export default function FinancialStatusPage() {
     const [detectResult, setDetectResult] = useState<string | null>(null);
     const [showRuns, setShowRuns] = useState(false);
 
-    // Build query — always send status param
+    const isAllTime = !startDate && !endDate;
+
+    // Build query — only send dates if user picked them
     const queryStr = useMemo(() => {
         const p = new URLSearchParams();
-        p.set('period', period);
+        if (startDate) p.set('startDate', startDate);
+        if (endDate) p.set('endDate', endDate);
         p.set('status', statusFilter);
         if (search) p.set('search', search);
         p.set('page', String(currentPage));
         p.set('pageSize', '50');
         return p.toString();
-    }, [period, statusFilter, search, currentPage]);
+    }, [startDate, endDate, statusFilter, search, currentPage]);
 
     const { data, loading, error, refresh } = useFetch<FSResponse>(
         `/api/command-center/financial-status-detail?${queryStr}`, [queryStr]
@@ -332,7 +330,7 @@ export default function FinancialStatusPage() {
         const blob = new Blob([csv], { type: 'text/csv' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url; a.download = `financial-status-${period}-${statusFilter}.csv`;
+        a.href = url; a.download = `financial-status-${startDate || 'all'}-to-${endDate || 'now'}-${statusFilter}.csv`;
         a.click(); URL.revokeObjectURL(url);
     };
 
@@ -358,21 +356,37 @@ export default function FinancialStatusPage() {
                     </h1>
                     <p className="text-sm text-slate-500 mt-1">
                         {statusFilter === 'FINANCIALLY_CLOSED'
-                            ? 'Delivered + 30-day return window expired + no refund = solid, final revenue'
+                            ? 'Delivered + 30-day return window expired = solid, final revenue'
                             : 'Showing orders still within 30-day return window — figures may change'}
-                        {data?.period && ` · ${data.period.start} → ${data.period.end}`}
+                        {data?.dateRange && (
+                            isAllTime
+                                ? ' · All Time'
+                                : ` · ${data.dateRange.start} → ${data.dateRange.end}`
+                        )}
                     </p>
                 </div>
                 <div className="flex items-center gap-3 flex-wrap">
-                    {/* Period Selector */}
-                    <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl p-0.5">
-                        {PERIODS.map(p => (
-                            <button key={p.key}
-                                onClick={() => { setPeriod(p.key); setCurrentPage(1); }}
-                                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all ${period === p.key ? 'bg-emerald-500/20 text-emerald-400 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}>
-                                {p.label}
-                            </button>
-                        ))}
+                    {/* Date Range Selector */}
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => { setStartDate(''); setEndDate(''); setCurrentPage(1); }}
+                            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all border ${
+                                isAllTime
+                                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 shadow-sm'
+                                    : 'bg-white/5 text-slate-400 border-white/10 hover:text-white hover:bg-white/10'
+                            }`}>
+                            All Time
+                        </button>
+                        <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-xl px-2.5 py-1">
+                            <Calendar size={12} className="text-slate-500" />
+                            <input type="date" value={startDate}
+                                onChange={e => { setStartDate(e.target.value); setCurrentPage(1); }}
+                                className="bg-transparent text-xs text-slate-300 outline-none w-[110px] [color-scheme:dark]" />
+                            <span className="text-[10px] text-slate-600">to</span>
+                            <input type="date" value={endDate}
+                                onChange={e => { setEndDate(e.target.value); setCurrentPage(1); }}
+                                className="bg-transparent text-xs text-slate-300 outline-none w-[110px] [color-scheme:dark]" />
+                        </div>
                     </div>
 
                     {/* Detect Button */}
@@ -929,15 +943,17 @@ export default function FinancialStatusPage() {
                         {search
                             ? 'No orders match your search. Try a different order ID or SKU.'
                             : statusFilter === 'FINANCIALLY_CLOSED'
-                                ? 'Try a wider date range — closed orders may fall outside the current period.'
-                                : 'No orders found with this status for the selected period.'}
+                                ? isAllTime
+                                    ? 'No orders have been financially closed yet. Run detection to close eligible orders.'
+                                    : 'No closed orders in this date range. Try clearing the date filter.'
+                                : 'No orders found with this status for the selected range.'}
                     </p>
                     <div className="flex items-center gap-3">
-                        {statusFilter === 'FINANCIALLY_CLOSED' && period !== '180d' && (
-                            <button onClick={() => { setPeriod('180d'); setCurrentPage(1); }}
+                        {statusFilter === 'FINANCIALLY_CLOSED' && !isAllTime && (
+                            <button onClick={() => { setStartDate(''); setEndDate(''); setCurrentPage(1); }}
                                 className="flex items-center gap-2 px-4 py-2.5 bg-white/5 border border-white/10 text-slate-300 text-sm font-medium rounded-xl hover:bg-white/10 transition-all">
                                 <Calendar size={14} />
-                                Try 180D
+                                Show All Time
                             </button>
                         )}
                         <button onClick={handleDetect} disabled={detecting}

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 import { calculateRevenue, type FinancialEvent } from '@/lib/revenue-engine';
 import type { SettlementPeriod, RevenueCalculatorResponse } from '@/lib/revenue-types';
 
@@ -62,36 +62,30 @@ export async function GET(request: Request) {
         let rawEvents: any[] | null = null;
         let useExtended = true;
 
-        {
-            const q = supabase
-                .from('financial_events')
-                .select(extSelect)
-                .gte('posted_date', startStr)
-                .lte('posted_date', endStr + 'T23:59:59')
-                .order('posted_date', { ascending: false });
-            const { data, error: evErr } = await q;
-            if (evErr) {
-                // Column doesn't exist — fall back to base select
-                if (evErr.message?.includes('column') || evErr.code === '42703') {
-                    useExtended = false;
-                } else {
-                    throw evErr;
-                }
+        try {
+            rawEvents = await fetchAllRows(
+                'financial_events',
+                extSelect,
+                q => q.gte('posted_date', startStr).lte('posted_date', endStr + 'T23:59:59'),
+                'posted_date',
+                false,
+            );
+        } catch (evErr: any) {
+            if (evErr?.message?.includes('column') || evErr?.code === '42703') {
+                useExtended = false;
             } else {
-                rawEvents = data;
+                throw evErr;
             }
         }
 
         if (!useExtended) {
-            const q = supabase
-                .from('financial_events')
-                .select(baseSelect)
-                .gte('posted_date', startStr)
-                .lte('posted_date', endStr + 'T23:59:59')
-                .order('posted_date', { ascending: false });
-            const { data, error: evErr } = await q;
-            if (evErr) throw evErr;
-            rawEvents = data;
+            rawEvents = await fetchAllRows(
+                'financial_events',
+                baseSelect,
+                q => q.gte('posted_date', startStr).lte('posted_date', endStr + 'T23:59:59'),
+                'posted_date',
+                false,
+            );
         }
 
         const events: FinancialEvent[] = (rawEvents || []).map((e: any) => ({

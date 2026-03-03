@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 
 const PERIOD_DAYS: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90 };
 
@@ -23,14 +23,18 @@ export async function GET(request: Request) {
             startStr = d.toISOString().split('T')[0];
         }
 
-        // Fetch financial events
-        let evtQuery = supabase
-            .from('financial_events')
-            .select('event_type, amount, quantity, fee_type, sku, amazon_order_id, posted_date, delivery_date')
-            .gte('posted_date', startStr)
-            .order('posted_date', { ascending: false });
-        if (endStr) evtQuery = evtQuery.lte('posted_date', endStr + 'T23:59:59');
-        const { data: events } = await evtQuery;
+        // Fetch financial events (paginated past 1k limit)
+        const events = await fetchAllRows(
+            'financial_events',
+            'event_type, amount, quantity, fee_type, sku, amazon_order_id, posted_date, delivery_date',
+            q => {
+                let fq = q.gte('posted_date', startStr);
+                if (endStr) fq = fq.lte('posted_date', endStr + 'T23:59:59');
+                return fq;
+            },
+            'posted_date',
+            false,
+        );
 
         // Fetch SKU master
         const { data: skuMaster } = await supabase.from('skus').select('sku, title, cost_per_unit, packaging_cost, shipping_cost_internal');

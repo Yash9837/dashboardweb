@@ -20,7 +20,7 @@
 //   Settlement: Jan 12 → Refund: None → Marked as FINANCIALLY_CLOSED
 // ============================================================================
 
-import { supabase } from './supabase';
+import { supabase, fetchAllRows } from './supabase';
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -96,17 +96,14 @@ function daysBetween(a: Date, b: Date): number {
 async function computeLastEventDates(): Promise<Map<string, { lastDate: string; count: number; netAmount: number }>> {
   const map = new Map<string, { lastDate: string; count: number; netAmount: number }>();
 
-  // Fetch financial events grouped by order
-  const { data: events, error } = await supabase
-    .from('financial_events')
-    .select('amazon_order_id, posted_date, amount')
-    .not('amazon_order_id', 'is', null)
-    .order('posted_date', { ascending: false });
-
-  if (error) {
-    console.error('[Lifecycle] Failed to fetch events for last_event_date:', error.message);
-    return map;
-  }
+  // Fetch financial events grouped by order (paginated past 1k limit)
+  const events = await fetchAllRows(
+    'financial_events',
+    'amazon_order_id, posted_date, amount',
+    q => q.not('amazon_order_id', 'is', null),
+    'posted_date',
+    false,
+  );
 
   for (const evt of (events || [])) {
     const orderId = evt.amazon_order_id;
@@ -146,12 +143,12 @@ async function resolveSettlementStatuses(): Promise<Map<string, { settlementId: 
     groupStatusMap.set(g.event_group_id, g.processing_status === 'Closed' ? 'Closed' : 'Open');
   }
 
-  // Get order → event_group mappings from financial_events
-  const { data: eventLinks } = await supabase
-    .from('financial_events')
-    .select('amazon_order_id, event_group_id')
-    .not('amazon_order_id', 'is', null)
-    .not('event_group_id', 'is', null);
+  // Get order → event_group mappings from financial_events (paginated past 1k limit)
+  const eventLinks = await fetchAllRows(
+    'financial_events',
+    'amazon_order_id, event_group_id',
+    q => q.not('amazon_order_id', 'is', null).not('event_group_id', 'is', null),
+  );
 
   for (const link of (eventLinks || [])) {
     const orderId = link.amazon_order_id;
@@ -250,12 +247,12 @@ export async function detectClosedOrders(
     // ── Build refund set: orders that have any Refund events ──
     const refundOrderIds = new Set<string>();
     {
-      const { data: refundEvents } = await supabase
-        .from('financial_events')
-        .select('amazon_order_id')
-        .eq('event_type', 'Refund')
-        .not('amazon_order_id', 'is', null);
-      for (const evt of (refundEvents || [])) {
+      const refundEvents = await fetchAllRows(
+        'financial_events',
+        'amazon_order_id',
+        q => q.eq('event_type', 'Refund').not('amazon_order_id', 'is', null),
+      );
+      for (const evt of refundEvents) {
         if (evt.amazon_order_id) refundOrderIds.add(evt.amazon_order_id);
       }
     }

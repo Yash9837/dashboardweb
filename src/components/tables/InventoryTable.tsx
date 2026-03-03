@@ -19,10 +19,10 @@ export default function InventoryTable({ items }: { items: InventoryItem[] }) {
     if (!items || items.length === 0) {
         return (
             <div className="bg-[#111827]/80 backdrop-blur-sm border border-white/5 rounded-2xl p-6">
-                <h3 className="text-white font-semibold text-lg">FBA Inventory</h3>
+                <h3 className="text-white font-semibold text-lg">FBM Inventory</h3>
                 <p className="text-sm text-slate-500 mt-0.5 mb-4">No inventory data found</p>
                 <div className="flex items-center justify-center h-40 text-sm text-slate-500">
-                    No FBA inventory items
+                    No inventory items
                 </div>
             </div>
         );
@@ -32,8 +32,8 @@ export default function InventoryTable({ items }: { items: InventoryItem[] }) {
         <div className="bg-[#111827]/80 backdrop-blur-sm border border-white/5 rounded-2xl p-6">
             <div className="flex items-center justify-between mb-5">
                 <div>
-                    <h3 className="text-white font-semibold text-lg">FBA Inventory</h3>
-                    <p className="text-sm text-slate-500 mt-0.5">{items.length} SKUs from Amazon FBA — live data</p>
+                    <h3 className="text-white font-semibold text-lg">FBM Inventory</h3>
+                    <p className="text-sm text-slate-500 mt-0.5">{items.length} SKUs — Fulfilled by Merchant</p>
                 </div>
                 <span className="flex items-center gap-1 text-xs bg-emerald-500/15 text-emerald-400 px-2 py-1 rounded-full font-medium">
                     <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />

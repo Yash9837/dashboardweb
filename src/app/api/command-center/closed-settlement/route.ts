@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 
 /**
  * GET /api/command-center/closed-settlement
@@ -20,28 +20,28 @@ export async function GET() {
         cutoff.setDate(cutoff.getDate() - 30);
         const cutoffStr = cutoff.toISOString().split('T')[0]; // YYYY-MM-DD
 
-        // ── 1. Fetch shipment events where delivery_date <= cutoff ────────────
-        const { data: shipments, error: shipErr } = await supabase
-            .from('financial_events')
-            .select('amazon_order_id, sku, amount, delivery_date, posted_date')
-            .eq('event_type', 'shipment')
-            .not('delivery_date', 'is', null)
-            .lte('delivery_date', cutoffStr)
-            .order('delivery_date', { ascending: false });
+        // ── 1. Fetch shipment events where delivery_date <= cutoff (paginated past 1k limit) ──
+        const shipments = await fetchAllRows(
+            'financial_events',
+            'amazon_order_id, sku, amount, delivery_date, posted_date',
+            q => q.eq('event_type', 'shipment').not('delivery_date', 'is', null).lte('delivery_date', cutoffStr),
+            'delivery_date',
+            false,
+        );
 
-        if (shipErr) throw shipErr;
+        // ── 2. Fetch all refund events (paginated past 1k limit) ──
+        const refunds = await fetchAllRows(
+            'financial_events',
+            'amazon_order_id, amount',
+            q => q.eq('event_type', 'refund'),
+        );
 
-        // ── 2. Fetch all refund events ────────────────────────────────────────
-        const { data: refunds } = await supabase
-            .from('financial_events')
-            .select('amazon_order_id, amount')
-            .eq('event_type', 'refund');
-
-        // ── 3. Fetch all fee events ───────────────────────────────────────────
-        const { data: fees } = await supabase
-            .from('financial_events')
-            .select('amazon_order_id, amount')
-            .eq('event_type', 'fee');
+        // ── 3. Fetch all fee events (paginated past 1k limit) ──
+        const fees = await fetchAllRows(
+            'financial_events',
+            'amazon_order_id, amount',
+            q => q.eq('event_type', 'fee'),
+        );
 
         // ── Build lookup maps by amazon_order_id ──────────────────────────────
         const refundMap = new Map<string, number>();

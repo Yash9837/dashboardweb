@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabase, fetchAllRows } from '@/lib/supabase';
 
 const PERIOD_DAYS: Record<string, number> = {
     '7d': 7,
@@ -51,14 +51,18 @@ export async function GET(request: Request) {
             .gte('date', prevStartStr)
             .lt('date', startStr);
 
-        // 3. Revenue state breakdown from financial_events ledger
-        let revQuery = supabase
-            .from('financial_events')
-            .select('event_type, amount, delivery_date, posted_date')
-            .gte('posted_date', startStr)
-            .in('event_type', ['shipment', 'refund']);
-        if (endStr) revQuery = revQuery.lte('posted_date', endStr + 'T23:59:59');
-        const { data: revenueStates } = await revQuery;
+        // 3. Revenue state breakdown from financial_events ledger (paginated past 1k limit)
+        const revenueStates = await fetchAllRows(
+            'financial_events',
+            'event_type, amount, delivery_date, posted_date',
+            q => {
+                let fq = q.gte('posted_date', startStr).in('event_type', ['shipment', 'refund']);
+                if (endStr) fq = fq.lte('posted_date', endStr + 'T23:59:59');
+                return fq;
+            },
+            'posted_date',
+            true,
+        );
 
         // 4. SKU-level data for real COGS/Shipping waterfall + return units
         let skuQuery = supabase
