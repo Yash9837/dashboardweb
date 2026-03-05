@@ -202,6 +202,46 @@ async function syncFinancialEvents(postedAfter: string): Promise<number> {
                         reference_id: `${orderId}-${sku}-fee-${fee.FeeType || 'unknown'}`,
                     });
                 }
+
+                // Item promotions (coupons, Lightning Deals, etc.)
+                for (const promo of (item.PromotionList || [])) {
+                    const amount = toAmount(promo.PromotionAmount);
+                    if (amount === 0) continue;
+
+                    ledgerRows.push({
+                        account_id: 'default',
+                        amazon_order_id: orderId,
+                        sku,
+                        event_type: 'promotion',
+                        amount,
+                        quantity: 0,
+                        currency: promo.PromotionAmount?.CurrencyCode || 'INR',
+                        posted_date: postedDate,
+                        fee_type: promo.PromotionType || 'Promotion',
+                        reference_id: `${orderId}-${sku}-promo-${promo.PromotionId || promo.PromotionType || 'unknown'}`,
+                    });
+                }
+
+                // TDS / Tax withheld at source (ItemTaxWithheldList)
+                for (const taxItem of (item.ItemTaxWithheldList || [])) {
+                    for (const comp of (taxItem.TaxesWithheld || [])) {
+                        const amount = toAmount(comp.ChargeAmount);
+                        if (amount === 0) continue;
+
+                        ledgerRows.push({
+                            account_id: 'default',
+                            amazon_order_id: orderId,
+                            sku,
+                            event_type: 'tax_withheld',
+                            amount, // Negative from Amazon
+                            quantity: 0,
+                            currency: comp.ChargeAmount?.CurrencyCode || 'INR',
+                            posted_date: postedDate,
+                            fee_type: comp.ChargeType || taxItem.TaxCollectionModel || 'TDS',
+                            reference_id: `${orderId}-${sku}-tds-${comp.ChargeType || 'TDS'}`,
+                        });
+                    }
+                }
             }
         }
 
@@ -214,6 +254,7 @@ async function syncFinancialEvents(postedAfter: string): Promise<number> {
                 const sku = item.SellerSKU || 'UNKNOWN';
                 const quantity = item.QuantityShipped || 1;
 
+                // Refund charges (negative Principal, ShippingCharge, etc.)
                 for (const charge of (item.ItemChargeAdjustmentList || item.ItemChargeList || [])) {
                     const amount = toAmount(charge.ChargeAmount);
                     if (amount === 0) continue;
@@ -229,6 +270,65 @@ async function syncFinancialEvents(postedAfter: string): Promise<number> {
                         posted_date: postedDate,
                         reference_id: `${orderId}-${sku}-refund-${charge.ChargeType || 'Principal'}`,
                     });
+                }
+
+                // Refund fee adjustments (RefundCommission, FixedClosingFee reversal, etc.)
+                for (const fee of (item.ItemFeeAdjustmentList || item.ItemFeeList || [])) {
+                    const amount = toAmount(fee.FeeAmount);
+                    if (amount === 0) continue;
+
+                    ledgerRows.push({
+                        account_id: 'default',
+                        amazon_order_id: orderId,
+                        sku,
+                        event_type: 'refund_fee',
+                        amount, // RefundCommission = negative, fee reversals = positive
+                        quantity: 0,
+                        currency: fee.FeeAmount?.CurrencyCode || 'INR',
+                        posted_date: postedDate,
+                        fee_type: fee.FeeType || 'RefundFee',
+                        reference_id: `${orderId}-${sku}-refundfee-${fee.FeeType || 'unknown'}`,
+                    });
+                }
+
+                // Refund promotion adjustments
+                for (const promo of (item.PromotionAdjustmentList || item.PromotionList || [])) {
+                    const amount = toAmount(promo.PromotionAmount);
+                    if (amount === 0) continue;
+
+                    ledgerRows.push({
+                        account_id: 'default',
+                        amazon_order_id: orderId,
+                        sku,
+                        event_type: 'promotion',
+                        amount,
+                        quantity: 0,
+                        currency: promo.PromotionAmount?.CurrencyCode || 'INR',
+                        posted_date: postedDate,
+                        fee_type: promo.PromotionType || 'RefundPromotion',
+                        reference_id: `${orderId}-${sku}-refundpromo-${promo.PromotionId || promo.PromotionType || 'unknown'}`,
+                    });
+                }
+
+                // TDS / Tax withheld on refunds
+                for (const taxItem of (item.ItemTaxWithheldList || [])) {
+                    for (const comp of (taxItem.TaxesWithheld || [])) {
+                        const amount = toAmount(comp.ChargeAmount);
+                        if (amount === 0) continue;
+
+                        ledgerRows.push({
+                            account_id: 'default',
+                            amazon_order_id: orderId,
+                            sku,
+                            event_type: 'tax_withheld',
+                            amount,
+                            quantity: 0,
+                            currency: comp.ChargeAmount?.CurrencyCode || 'INR',
+                            posted_date: postedDate,
+                            fee_type: comp.ChargeType || taxItem.TaxCollectionModel || 'TDS_Refund',
+                            reference_id: `${orderId}-${sku}-tds-refund-${comp.ChargeType || 'TDS'}`,
+                        });
+                    }
                 }
             }
         }
@@ -254,23 +354,48 @@ async function syncFinancialEvents(postedAfter: string): Promise<number> {
             }
         }
 
-        // Process AdjustmentEventList
+        // Process AdjustmentEventList (PostageRefund, REVERSAL_REIMBURSEMENT, etc.)
         for (const evt of (page.AdjustmentEventList || [])) {
+            const postedDate = evt.PostedDate || new Date().toISOString();
+            const adjustmentType = evt.AdjustmentType || 'unknown';
+            // Some adjustment events include an AmazonOrderId at the event level
+            const adjustmentOrderId = evt.AmazonOrderId || null;
+
             for (const item of (evt.AdjustmentItemList || [])) {
                 const amount = toAmount(item.TotalAmount);
                 if (amount === 0) continue;
 
                 ledgerRows.push({
                     account_id: 'default',
-                    amazon_order_id: null,
+                    amazon_order_id: adjustmentOrderId,
                     sku: item.SellerSKU || null,
                     event_type: 'adjustment',
                     amount,
                     quantity: item.Quantity || 0,
                     currency: item.TotalAmount?.CurrencyCode || 'INR',
-                    posted_date: evt.PostedDate || new Date().toISOString(),
-                    reference_id: `adj-${evt.AdjustmentType || 'unknown'}-${item.SellerSKU || 'none'}-${evt.PostedDate || Date.now()}`,
+                    posted_date: postedDate,
+                    fee_type: adjustmentType,
+                    reference_id: `adj-${adjustmentType}-${item.SellerSKU || 'none'}-${item.AsinIsbnCode || 'none'}-${postedDate}`,
                 });
+            }
+
+            // Some adjustments have no item list but still carry a TotalAmount at event level
+            if ((!evt.AdjustmentItemList || evt.AdjustmentItemList.length === 0) && evt.AdjustmentAmount) {
+                const amount = toAmount(evt.AdjustmentAmount);
+                if (amount !== 0) {
+                    ledgerRows.push({
+                        account_id: 'default',
+                        amazon_order_id: adjustmentOrderId,
+                        sku: null,
+                        event_type: 'adjustment',
+                        amount,
+                        quantity: 0,
+                        currency: evt.AdjustmentAmount?.CurrencyCode || 'INR',
+                        posted_date: postedDate,
+                        fee_type: adjustmentType,
+                        reference_id: `adj-${adjustmentType}-evt-${postedDate}`,
+                    });
+                }
             }
         }
     }
@@ -489,12 +614,47 @@ async function syncSettlements(postedAfter: string): Promise<{ groups: number; i
                                 posted_date: evt.PostedDate,
                             });
                         }
+                        // Promotions
+                        for (const promo of (item.PromotionList || [])) {
+                            const amount = toAmount(promo.PromotionAmount);
+                            if (amount === 0) continue;
+                            itemRows.push({
+                                settlement_id: groupId,
+                                amazon_order_id: evt.AmazonOrderId || null,
+                                sku: item.SellerSKU || null,
+                                transaction_type: 'Order',
+                                amount_type: 'Promotion',
+                                amount_description: promo.PromotionType || 'Promotion',
+                                amount,
+                                quantity: 0,
+                                posted_date: evt.PostedDate,
+                            });
+                        }
+                        // TDS / Tax withheld
+                        for (const taxItem of (item.ItemTaxWithheldList || [])) {
+                            for (const comp of (taxItem.TaxesWithheld || [])) {
+                                const amount = toAmount(comp.ChargeAmount);
+                                if (amount === 0) continue;
+                                itemRows.push({
+                                    settlement_id: groupId,
+                                    amazon_order_id: evt.AmazonOrderId || null,
+                                    sku: item.SellerSKU || null,
+                                    transaction_type: 'Order',
+                                    amount_type: 'TaxWithheld',
+                                    amount_description: comp.ChargeType || 'TDS',
+                                    amount,
+                                    quantity: 0,
+                                    posted_date: evt.PostedDate,
+                                });
+                            }
+                        }
                     }
                 }
 
                 // Process refund events
                 for (const evt of (page.RefundEventList || [])) {
                     for (const item of (evt.ShipmentItemAdjustmentList || evt.ShipmentItemList || [])) {
+                        // Refund charges
                         for (const charge of (item.ItemChargeAdjustmentList || item.ItemChargeList || [])) {
                             const amount = toAmount(charge.ChargeAmount);
                             if (amount === 0) continue;
@@ -509,6 +669,56 @@ async function syncSettlements(postedAfter: string): Promise<{ groups: number; i
                                 quantity: -(item.QuantityShipped || 1),
                                 posted_date: evt.PostedDate,
                             });
+                        }
+                        // Refund fee adjustments (RefundCommission, fee reversals)
+                        for (const fee of (item.ItemFeeAdjustmentList || item.ItemFeeList || [])) {
+                            const amount = toAmount(fee.FeeAmount);
+                            if (amount === 0) continue;
+                            itemRows.push({
+                                settlement_id: groupId,
+                                amazon_order_id: evt.AmazonOrderId || null,
+                                sku: item.SellerSKU || null,
+                                transaction_type: 'Refund',
+                                amount_type: 'ItemFees',
+                                amount_description: fee.FeeType || 'RefundFee',
+                                amount,
+                                quantity: 0,
+                                posted_date: evt.PostedDate,
+                            });
+                        }
+                        // Refund promotion adjustments
+                        for (const promo of (item.PromotionAdjustmentList || item.PromotionList || [])) {
+                            const amount = toAmount(promo.PromotionAmount);
+                            if (amount === 0) continue;
+                            itemRows.push({
+                                settlement_id: groupId,
+                                amazon_order_id: evt.AmazonOrderId || null,
+                                sku: item.SellerSKU || null,
+                                transaction_type: 'Refund',
+                                amount_type: 'Promotion',
+                                amount_description: promo.PromotionType || 'RefundPromotion',
+                                amount,
+                                quantity: 0,
+                                posted_date: evt.PostedDate,
+                            });
+                        }
+                        // TDS / Tax withheld on refunds
+                        for (const taxItem of (item.ItemTaxWithheldList || [])) {
+                            for (const comp of (taxItem.TaxesWithheld || [])) {
+                                const amount = toAmount(comp.ChargeAmount);
+                                if (amount === 0) continue;
+                                itemRows.push({
+                                    settlement_id: groupId,
+                                    amazon_order_id: evt.AmazonOrderId || null,
+                                    sku: item.SellerSKU || null,
+                                    transaction_type: 'Refund',
+                                    amount_type: 'TaxWithheld',
+                                    amount_description: comp.ChargeType || 'TDS_Refund',
+                                    amount,
+                                    quantity: 0,
+                                    posted_date: evt.PostedDate,
+                                });
+                            }
                         }
                     }
                 }
@@ -655,8 +865,20 @@ async function computeAggregations(): Promise<void> {
         } else if (evt.event_type === 'refund') {
             agg.refund_amount += Math.abs(evt.amount);
             agg.refund_units += Math.abs(evt.quantity);
-        } else if (evt.event_type === 'fee') {
+        } else if (evt.event_type === 'fee' || evt.event_type === 'refund_fee') {
             agg.fee_amount += Math.abs(evt.amount);
+        } else if (evt.event_type === 'tax_withheld') {
+            agg.fee_amount += Math.abs(evt.amount); // TDS treated as deduction
+        } else if (evt.event_type === 'promotion') {
+            // Promotions are negative amounts (discounts), reduce revenue
+            agg.revenue_live += evt.amount;
+        } else if (evt.event_type === 'adjustment') {
+            // Positive adjustments (PostageRefund) reduce refund impact
+            if (evt.amount > 0) {
+                agg.refund_amount = Math.max(0, agg.refund_amount - evt.amount);
+            } else {
+                agg.refund_amount += Math.abs(evt.amount);
+            }
         } else if (evt.event_type === 'ad_spend') {
             agg.ad_spend += Math.abs(evt.amount);
         }

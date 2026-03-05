@@ -424,6 +424,7 @@ export function calculateRevenue(input: EngineInput): EngineOutput {
       // ═══════════════════════════════════════════════════════════════════
       case 'adjustment': {
         const txnType = (evt.transaction_type || '').toLowerCase();
+        const adjFeeType = (evt.fee_type || '').toLowerCase();
 
         if (txnType.includes('chargeback')) {
           rec.transaction_types.add('Chargeback');
@@ -433,13 +434,84 @@ export function calculateRevenue(input: EngineInput): EngineOutput {
           rec.transaction_types.add('Adjustment');
         }
 
-        // Positive adjustments = money coming back (reimbursement)
-        // Negative adjustments = additional charges
-        if (amount > 0) {
+        // PostageRefund adjustments from RTO returns should be tracked
+        if (adjFeeType.includes('postagerefund') || adjFeeType.includes('postage_refund')) {
+          rec.transaction_types.add('Adjustment');
+          // Positive = money returning (shipping refund for RTO)
+          if (amount > 0) {
+            rec.adjustment_fees -= absAmount;
+          } else {
+            rec.adjustment_fees += absAmount;
+          }
+        } else if (amount > 0) {
           rec.adjustment_fees -= absAmount; // Reduce deductions (reimbursement)
         } else {
           rec.adjustment_fees += absAmount; // Add deduction
         }
+        break;
+      }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // REFUND_FEE — Fee adjustments on refunds (RefundCommission,
+      //              FixedClosingFee reversal, etc.)
+      // ═══════════════════════════════════════════════════════════════════
+      case 'refund_fee': {
+        rec.transaction_types.add('Refund');
+
+        // RefundCommission is a NEGATIVE fee (Amazon charges for refund processing)
+        // Fee reversals (e.g. FixedClosingFee) are POSITIVE (Amazon gives back the original fee)
+        if (feeType.includes('commission') || feeType.includes('refundcommission')) {
+          rec.refund_commission += absAmount;
+        } else if (feeType.includes('fixedclosing') || feeType.includes('closingfee') || feeType.includes('variableclosing')) {
+          // Closing fee reversal: positive = money back → reduces net fees
+          if (amount > 0) {
+            rec.closing_fee = Math.max(0, rec.closing_fee - absAmount);
+          } else {
+            rec.closing_fee += absAmount;
+          }
+        } else if (feeType.includes('fba') || feeType.includes('fulfilment')) {
+          if (amount > 0) {
+            rec.fba_fee = Math.max(0, rec.fba_fee - absAmount);
+          } else {
+            rec.fba_fee += absAmount;
+          }
+        } else if (feeType.includes('referral')) {
+          if (amount > 0) {
+            rec.referral_fee = Math.max(0, rec.referral_fee - absAmount);
+          } else {
+            rec.referral_fee += absAmount;
+          }
+        } else {
+          // Generic refund fee
+          if (amount > 0) {
+            rec.other_fees = Math.max(0, rec.other_fees - absAmount);
+          } else {
+            rec.other_fees += absAmount;
+          }
+        }
+        break;
+      }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // TAX_WITHHELD — TDS deducted at source by Amazon
+      // ═══════════════════════════════════════════════════════════════════
+      case 'tax_withheld': {
+        if (feeType.includes('tds') || feeType.includes('itemtds') || feeType.includes('tax_deducted')) {
+          rec.tds += absAmount;
+        } else if (feeType.includes('tcs')) {
+          rec.tcs += absAmount;
+        } else {
+          // Default to TDS
+          rec.tds += absAmount;
+        }
+        break;
+      }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // PROMOTION — Coupons, Lightning Deals, promo adjustments
+      // ═══════════════════════════════════════════════════════════════════
+      case 'promotion': {
+        rec.promotional_rebates += amount; // Already negative from Amazon
         break;
       }
 
