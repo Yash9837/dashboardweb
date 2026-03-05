@@ -313,6 +313,61 @@ export async function GET(request: Request) {
       }
     }
 
+    // ── 9b. Compute "Payments Finalized Till Date" ──
+    // Group orders by purchase_date day, walk from earliest to latest.
+    // Finalized-till = the latest date where ALL orders on that date are FINANCIALLY_CLOSED
+    // (or have a manual INCLUDE/EXCLUDE override).
+    // Skip NO_ORDER records (orderless events like adjustments/service fees).
+
+    // Fetch manual overrides
+    const { data: overridesData } = await supabase
+      .from('finalized_order_overrides')
+      .select('amazon_order_id, override_action');
+    const overrideMap = new Map((overridesData || []).map((o: any) => [o.amazon_order_id, o.override_action]));
+
+    const dayOrders = new Map<string, { total: number; closed: number; revenue: number }>();
+    for (const r of allRecords) {
+      if (!r.order_date) continue;
+      if (r.order_id === 'NO_ORDER') continue;
+      const day = r.order_date.slice(0, 10);
+      if (!dayOrders.has(day)) dayOrders.set(day, { total: 0, closed: 0, revenue: 0 });
+      const d = dayOrders.get(day)!;
+
+      // Check for manual override
+      const override = overrideMap.get(r.order_id);
+      if (override === 'INCLUDE' || override === 'EXCLUDE') {
+        // INCLUDE = treat as closed (user confirmed it's final)
+        // EXCLUDE = skip entirely (don't count in total or closed)
+        if (override === 'INCLUDE') {
+          d.total++;
+          d.closed++;
+          d.revenue += r.calculations?.net_settlement || 0;
+        }
+        // EXCLUDE: don't add to total at all — invisible to finalized-till
+        continue;
+      }
+
+      d.total++;
+      if ((r.financial_status || 'OPEN') === 'FINANCIALLY_CLOSED') {
+        d.closed++;
+        d.revenue += r.calculations?.net_settlement || 0;
+      }
+    }
+    const sortedDays = [...dayOrders.keys()].sort();
+    let finalizedTillDate: string | null = null;
+    let finalizedRevenue = 0;
+    let finalizedOrderCount = 0;
+    for (const day of sortedDays) {
+      const d = dayOrders.get(day)!;
+      if (d.total === 0 || d.total === d.closed) {
+        finalizedTillDate = day;
+        finalizedRevenue += d.revenue;
+        finalizedOrderCount += d.total;
+      } else {
+        break;
+      }
+    }
+
     const lifecycleStats = {
       total_orders: total,
       ...distribution,
@@ -321,12 +376,16 @@ export async function GET(request: Request) {
       settlement_rate: total > 0
         ? Math.round(((distribution.DELIVERED_PENDING_SETTLEMENT + distribution.FINANCIALLY_CLOSED) / total) * 10000) / 100
         : 0,
-      // Closure timeline (30-day rule)
+      // Closure timeline
       earliest_delivery: earliestDelivery,
       earliest_eligible_date: earliestEligibleDate,
       days_until_first_eligible: daysUntilFirstEligible,
       refunded_count: refundedCount,
       eligible_for_closure: eligibleForClosure,
+      // Finalized till date
+      finalized_till_date: finalizedTillDate,
+      finalized_revenue: Math.round(finalizedRevenue * 100) / 100,
+      finalized_order_count: finalizedOrderCount,
     };
 
     // ── 10. Paginate ──

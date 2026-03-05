@@ -1,5 +1,6 @@
 'use client';
 import { useState, useMemo } from 'react';
+import Link from 'next/link';
 import DashboardLayout from '@/components/layout/DashboardLayout';
 import { useFetch } from '@/hooks/useFetch';
 import OrderDetailPanel from '@/components/revenue-calculator/OrderDetailPanel';
@@ -9,7 +10,7 @@ import {
     ChevronDown, ChevronUp, ChevronLeft, ChevronRight, ArrowUpDown,
     RefreshCw, Download, Calendar, IndianRupee, TrendingDown, RotateCcw,
     Package, Loader2, Zap, Play, History, Filter,
-    ShoppingCart, Truck, ArrowLeftRight, FileText,
+    ShoppingCart, Truck, ArrowLeftRight, FileText, Eye,
 } from 'lucide-react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -54,12 +55,16 @@ interface LifecycleData {
     settled_count: number;
     closure_rate: number;
     settlement_rate: number;
-    // Closure timeline (30-day rule)
+    // Closure timeline
     earliest_delivery: string | null;
     earliest_eligible_date: string | null;
     days_until_first_eligible: number;
     refunded_count: number;
     eligible_for_closure: number;
+    // Finalized till date
+    finalized_till_date: string | null;
+    finalized_revenue: number;
+    finalized_order_count: number;
 }
 
 interface RunResult {
@@ -356,8 +361,8 @@ export default function FinancialStatusPage() {
                     </h1>
                     <p className="text-sm text-slate-500 mt-1">
                         {statusFilter === 'FINANCIALLY_CLOSED'
-                            ? 'Delivered + 30-day return window expired = solid, final revenue'
-                            : 'Showing orders still within 30-day return window — figures may change'}
+                            ? 'Settlement closed + disbursed = solid, final revenue'
+                            : 'Showing orders awaiting settlement/disbursement — figures may change'}
                         {data?.dateRange && (
                             isAllTime
                                 ? ' · All Time'
@@ -370,11 +375,10 @@ export default function FinancialStatusPage() {
                     <div className="flex items-center gap-2">
                         <button
                             onClick={() => { setStartDate(''); setEndDate(''); setCurrentPage(1); }}
-                            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all border ${
-                                isAllTime
-                                    ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 shadow-sm'
-                                    : 'bg-white/5 text-slate-400 border-white/10 hover:text-white hover:bg-white/10'
-                            }`}>
+                            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all border ${isAllTime
+                                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 shadow-sm'
+                                : 'bg-white/5 text-slate-400 border-white/10 hover:text-white hover:bg-white/10'
+                                }`}>
                             All Time
                         </button>
                         <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-xl px-2.5 py-1">
@@ -464,29 +468,65 @@ export default function FinancialStatusPage() {
 
             {/* ── Lifecycle Overview Cards ── */}
             {lifecycle && (
-                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
-                    {[
-                        { label: 'Total Orders', value: lifecycle.total_orders, color: 'text-white', icon: Package, sub: `${lifecycle.settlement_rate}% delivered` },
-                        { label: 'Open', value: lifecycle.OPEN, color: 'text-slate-400', icon: Unlock, sub: 'Not yet delivered' },
-                        { label: 'Pending (Return Window)', value: lifecycle.DELIVERED_PENDING_SETTLEMENT, color: 'text-amber-400', icon: Clock, sub: 'Within 30-day window' },
-                        { label: 'Financially Closed', value: lifecycle.FINANCIALLY_CLOSED, color: 'text-emerald-400', icon: Lock, sub: '30d passed, no refund' },
-                        { label: 'Closure Rate', value: lifecycle.closure_rate, color: lifecycle.closure_rate > 50 ? 'text-emerald-400' : 'text-amber-400', icon: CheckCircle2, sub: 'Of all orders', isPercent: true },
-                    ].map(card => {
-                        const Icon = card.icon;
-                        return (
-                            <div key={card.label} className="bg-[#111827]/80 border border-white/[0.06] rounded-xl p-4">
-                                <div className="flex items-center gap-1.5 mb-2">
-                                    <Icon size={12} className="text-slate-500" />
-                                    <p className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">{card.label}</p>
+                <>
+                    {/* Finalized Till Date — Hero Card */}
+                    {lifecycle.finalized_till_date && (
+                        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-5 flex items-center justify-between">
+                            <div className="flex items-center gap-4">
+                                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center">
+                                    <Shield size={20} className="text-emerald-400" />
                                 </div>
-                                <p className={`text-xl font-bold ${card.color}`}>
-                                    {(card as any).isPercent ? `${card.value}%` : card.value.toLocaleString('en-IN')}
-                                </p>
-                                <p className="text-[9px] text-slate-600 mt-0.5">{card.sub}</p>
+                                <div>
+                                    <p className="text-[10px] font-medium text-emerald-500 uppercase tracking-wider">Payments Finalized Till</p>
+                                    <p className="text-xl font-bold text-emerald-400">
+                                        {new Date(lifecycle.finalized_till_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                    </p>
+                                    <p className="text-[10px] text-slate-500 mt-0.5">
+                                        {lifecycle.finalized_order_count} orders &middot; Revenue till this date is solid &amp; final
+                                    </p>
+                                </div>
                             </div>
-                        );
-                    })}
-                </div>
+                            <div className="flex items-center gap-4">
+                                <div className="text-right">
+                                    <p className="text-[10px] text-slate-500">Finalized Revenue</p>
+                                    <p className="text-lg font-bold text-emerald-400">
+                                        ₹{lifecycle.finalized_revenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                    </p>
+                                </div>
+                                <Link
+                                    href="/command-center/financial-status/blockers"
+                                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-amber-500/15 border border-amber-500/25 rounded-lg text-amber-400 hover:bg-amber-500/25 transition whitespace-nowrap"
+                                >
+                                    <Eye size={13} />
+                                    View Blockers
+                                </Link>
+                            </div>
+                        </div>
+                    )}
+                    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+                        {[
+                            { label: 'Total Orders', value: lifecycle.total_orders, color: 'text-white', icon: Package, sub: `${lifecycle.settlement_rate}% settled` },
+                            { label: 'Open', value: lifecycle.OPEN, color: 'text-slate-400', icon: Unlock, sub: 'No financial events' },
+                            { label: 'Pending Settlement', value: lifecycle.DELIVERED_PENDING_SETTLEMENT, color: 'text-amber-400', icon: Clock, sub: 'Awaiting disbursement' },
+                            { label: 'Financially Closed', value: lifecycle.FINANCIALLY_CLOSED, color: 'text-emerald-400', icon: Lock, sub: 'Settled & disbursed' },
+                            { label: 'Closure Rate', value: lifecycle.closure_rate, color: lifecycle.closure_rate > 50 ? 'text-emerald-400' : 'text-amber-400', icon: CheckCircle2, sub: 'Of all orders', isPercent: true },
+                        ].map(card => {
+                            const Icon = card.icon;
+                            return (
+                                <div key={card.label} className="bg-[#111827]/80 border border-white/[0.06] rounded-xl p-4">
+                                    <div className="flex items-center gap-1.5 mb-2">
+                                        <Icon size={12} className="text-slate-500" />
+                                        <p className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">{card.label}</p>
+                                    </div>
+                                    <p className={`text-xl font-bold ${card.color}`}>
+                                        {(card as any).isPercent ? `${card.value}%` : card.value.toLocaleString('en-IN')}
+                                    </p>
+                                    <p className="text-[9px] text-slate-600 mt-0.5">{card.sub}</p>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </>
             )}
 
             {/* ── Settled Orders Summary: Fees / Taxes / Refunds / Net ── */}
@@ -710,8 +750,8 @@ export default function FinancialStatusPage() {
                     </div>
                     <p className={`text-[9px] mt-2 text-center ${statusFilter === 'FINANCIALLY_CLOSED' ? 'text-emerald-600' : 'text-amber-600'}`}>
                         {statusFilter === 'FINANCIALLY_CLOSED'
-                            ? '🔒 These figures are FINAL — delivery + 30-day return window expired, no refunds recorded. Your solid revenue.'
-                            : '⚠ These figures may still change — orders are within the 30-day return window, refunds/returns may still occur.'}
+                            ? '🔒 These figures are FINAL — all settlements closed and disbursed. Your solid revenue.'
+                            : '⚠ These figures may still change — orders are awaiting settlement closure or disbursement.'}
                     </p>
                 </div>
             )}
@@ -757,7 +797,7 @@ export default function FinancialStatusPage() {
                     <AlertTriangle size={14} className="shrink-0" />
                     <div>
                         <span className="font-semibold">⚠ These figures may still change.</span>
-                        {' '}Orders in &quot;{statusFilter === 'all' ? 'All Settled' : 'Pending (Return Window)'}&quot; are still within the 30-day return window and can receive refunds.
+                        {' '}Orders in &quot;{statusFilter === 'all' ? 'All Settled' : 'Pending Settlement'}&quot; are still awaiting settlement closure or disbursement.
                         Switch to <button onClick={() => { setStatusFilter('FINANCIALLY_CLOSED'); setCurrentPage(1); }} className="underline font-bold text-emerald-400 hover:text-emerald-300">🔒 Financially Closed</button> for solid, immutable figures.
                     </div>
                 </div>

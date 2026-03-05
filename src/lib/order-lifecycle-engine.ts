@@ -152,10 +152,17 @@ async function resolveSettlementStatuses(): Promise<Map<string, OrderSettlementI
 
   const groupInfoMap = new Map<string, { closed: boolean; disbursed: boolean }>();
   for (const g of (groups || [])) {
-    groupInfoMap.set(g.event_group_id, {
-      closed: g.processing_status === 'Closed',
-      disbursed: g.processing_status === 'Closed' && g.fund_transfer_status === 'Succeeded',
-    });
+    const isClosed = g.processing_status === 'Closed';
+    // For Closed settlements, only 'Initiated' and 'Processing' are non-terminal.
+    // All other states are terminal (funds moved, nothing to move, or failed/rolled over):
+    //   Succeeded          → funds transferred ✓
+    //   NoFundsDisbursed   → zero balance, nothing to transfer ✓
+    //   Failed             → transfer failed, rolled into next settlement ✓
+    //   Unknown            → old settlement, status not tracked ✓
+    //   Initiated/Processing → still in progress, NOT finalized
+    const nonTerminal = g.fund_transfer_status === 'Initiated' || g.fund_transfer_status === 'Processing';
+    const isDisbursed = isClosed && !nonTerminal;
+    groupInfoMap.set(g.event_group_id, { closed: isClosed, disbursed: isDisbursed });
   }
 
   // 2. Fetch settlement_items to link orders → settlement groups
@@ -229,16 +236,20 @@ async function resolveSettlementStatuses(): Promise<Map<string, OrderSettlementI
 function determineFinancialStatus(
   order: {
     delivery_date: string | null;
+    purchase_date: string | null;
     order_status: string;
   },
   _lastEventDate: string | null,
   settlementResolution: SettlementResolution,
   _now: Date,
   hasRefund: boolean = false,
+  eventCount: number = 0,
 ): { newStatus: FinancialStatus; returnDeadline: Date | null; reason: string } {
 
-  // ── Cancelled orders → FINANCIALLY_CLOSED (no money will move) ──
-  if (order.order_status === 'Cancelled') {
+  // ── Cancelled/Canceled orders → FINANCIALLY_CLOSED (no money will move) ──
+  // Amazon API returns "Canceled" (US spelling), DB may have "Cancelled" (UK) — handle both
+  const statusLower = (order.order_status || '').toLowerCase();
+  if (statusLower === 'cancelled' || statusLower === 'canceled') {
     return {
       newStatus: 'FINANCIALLY_CLOSED',
       returnDeadline: null,
@@ -273,13 +284,55 @@ function determineFinancialStatus(
       };
 
     case 'Unsettled':
-    default:
-      // No financial transactions recorded for this order
+    default: {
+      // "Unsettled" means no settlement_items linkage exists for this order.
+      // But the order may still have financial_events (shipment/refund/fee) —
+      // this happens when events were synced but settlement linkage wasn't.
+      //
+      // Decision tree:
+      //   Has events + shipped 30+ days ago → FINANCIALLY_CLOSED (settlement link gap)
+      //   Has events + recent              → DELIVERED_PENDING_SETTLEMENT
+      //   No events + shipped 60+ days ago → FINANCIALLY_CLOSED (full sync gap)
+      //   No events + recent               → OPEN (genuinely new)
+
+      const isShippedOrDelivered = ['shipped', 'delivered'].includes(statusLower);
+      const refDate = order.delivery_date || order.purchase_date;
+      const age = refDate ? daysBetween(new Date(refDate), _now) : 0;
+
+      // Case 1: Has financial events but no settlement linkage
+      if (eventCount > 0) {
+        const EVENTS_STALE_DAYS = 25; // events exist + delivered 25+ days ago → safe to close
+        if (age >= EVENTS_STALE_DAYS && isShippedOrDelivered) {
+          return {
+            newStatus: 'FINANCIALLY_CLOSED',
+            returnDeadline: null,
+            reason: `Has ${eventCount} financial events but no settlement linkage — ${statusLower} ${age}d ago. Auto-closed (settlement link gap).`,
+          };
+        }
+        // Events exist but order is recent — at least mark as pending
+        return {
+          newStatus: 'DELIVERED_PENDING_SETTLEMENT',
+          returnDeadline: null,
+          reason: `Has ${eventCount} financial events but no settlement linkage yet — awaiting settlement sync`,
+        };
+      }
+
+      // Case 2: No events at all — truly unsettled
+      const NO_EVENTS_STALE_DAYS = 60;
+      if (refDate && age >= NO_EVENTS_STALE_DAYS && isShippedOrDelivered) {
+        return {
+          newStatus: 'FINANCIALLY_CLOSED',
+          returnDeadline: null,
+          reason: `Stale order — ${statusLower} ${age}d ago with no financial events (sync gap). Auto-closed.`,
+        };
+      }
+
       return {
         newStatus: 'OPEN',
         returnDeadline: null,
         reason: 'No financial transactions found in any settlement',
       };
+    }
   }
 }
 
@@ -374,11 +427,12 @@ export async function detectClosedOrders(
       // Determine new status based on settlement/disbursement
       const hasRefund = refundOrderIds.has(orderId);
       const { newStatus, returnDeadline, reason } = determineFinancialStatus(
-        { delivery_date: order.delivery_date, order_status: order.order_status },
+        { delivery_date: order.delivery_date, purchase_date: order.purchase_date, order_status: order.order_status },
         lastEventDate,
         settlementResolution,
         now,
         hasRefund,
+        eventCount,
       );
 
       // Only update if status changed
