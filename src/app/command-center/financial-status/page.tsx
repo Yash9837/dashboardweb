@@ -9,7 +9,7 @@ import {
     Lock, Unlock, Clock, Shield, CheckCircle2, AlertTriangle, Search,
     ChevronDown, ChevronUp, ChevronLeft, ChevronRight, ArrowUpDown,
     RefreshCw, Download, Calendar, IndianRupee, TrendingDown, RotateCcw,
-    Package, Loader2, Zap, Play, History, Filter,
+    Package, Loader2, Zap, Play, History, Filter, CloudDownload,
     ShoppingCart, Truck, ArrowLeftRight, FileText, Eye,
 } from 'lucide-react';
 
@@ -216,6 +216,8 @@ export default function FinancialStatusPage() {
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
     const [detecting, setDetecting] = useState(false);
     const [detectResult, setDetectResult] = useState<string | null>(null);
+    const [syncing, setSyncing] = useState(false);
+    const [syncResult, setSyncResult] = useState<string | null>(null);
     const [showRuns, setShowRuns] = useState(false);
 
     const isAllTime = !startDate && !endDate;
@@ -302,6 +304,30 @@ export default function FinancialStatusPage() {
             setDetectResult(`❌ Error: ${err.message}`);
         } finally {
             setDetecting(false);
+        }
+    };
+
+    const handleSync = async () => {
+        setSyncing(true);
+        setSyncResult(null);
+        try {
+            const res = await fetch('/api/command-center/sync?period=730d', { method: 'POST' });
+            const json = await res.json();
+            if (json.error) throw new Error(json.error);
+            const c = json.counts || {};
+            setSyncResult(
+                `✅ Amazon Sync complete in ${(json.duration_ms / 1000).toFixed(1)}s — ` +
+                `${c.orders || 0} orders, ${c.financial_events || 0} events, ` +
+                `${c.settlement_groups || 0} settlement groups synced` +
+                (c.lifecycle ? `, ${c.lifecycle.orders_closed} newly closed` : '') +
+                (json.warnings?.length ? ` · ⚠ ${json.warnings.length} warning(s)` : '')
+            );
+            // Refresh page data after sync
+            setTimeout(() => { refresh(); refreshStats(); }, 500);
+        } catch (err: any) {
+            setSyncResult(`❌ Sync Error: ${err.message}`);
+        } finally {
+            setSyncing(false);
         }
     };
 
@@ -393,8 +419,15 @@ export default function FinancialStatusPage() {
                         </div>
                     </div>
 
+                    {/* Sync from Amazon */}
+                    <button onClick={handleSync} disabled={syncing || detecting}
+                        className="flex items-center gap-2 px-3 py-2 bg-blue-500/10 border border-blue-500/20 rounded-xl text-sm text-blue-400 hover:bg-blue-500/20 transition-all disabled:opacity-50">
+                        {syncing ? <Loader2 size={14} className="animate-spin" /> : <CloudDownload size={14} />}
+                        {syncing ? 'Syncing...' : 'Sync Amazon'}
+                    </button>
+
                     {/* Detect Button */}
-                    <button onClick={handleDetect} disabled={detecting}
+                    <button onClick={handleDetect} disabled={detecting || syncing}
                         className="flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-sm text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-50">
                         {detecting ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
                         {detecting ? 'Detecting...' : 'Run Detection'}
@@ -418,6 +451,17 @@ export default function FinancialStatusPage() {
                     </button>
                 </div>
             </div>
+
+            {/* Sync result banner */}
+            {syncResult && (
+                <div className={`flex items-center gap-2 p-3 rounded-xl text-xs font-medium ${syncResult.startsWith('❌')
+                    ? 'bg-red-500/10 border border-red-500/20 text-red-400'
+                    : 'bg-blue-500/10 border border-blue-500/20 text-blue-400'
+                    }`}>
+                    <CloudDownload size={12} />{syncResult}
+                    <button onClick={() => setSyncResult(null)} className="ml-auto text-slate-500 hover:text-white">✕</button>
+                </div>
+            )}
 
             {/* Detection result banner */}
             {detectResult && (
