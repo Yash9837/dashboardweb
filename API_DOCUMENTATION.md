@@ -567,6 +567,80 @@ GET /api/external/sku-performance?period=30d&page=2&limit=50&sort=revenue&order=
 
 ---
 
+### 4.8 FBM Catalog — Inventory & SKU Details
+
+**Best for:** Complete SKU catalog with FBM inventory levels, costs, and health metrics.
+
+```
+GET /api/external/fbm-catalog?page=1&limit=50&sort=stock&order=desc&status=all
+```
+
+**Filters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `page` | integer | `1` | Page number (1-indexed) |
+| `limit` | integer | `50` | Items per page (min: 1, max: 200) |
+| `sort` | string | `stock` | Sort field: `sku`, `name`, `stock`, `daysInventory` |
+| `order` | string | `desc` | Sort direction: `asc` or `desc` |
+| `status` | string | `all` | Filter: `all`, `in-stock`, `low-stock`, `out-of-stock` |
+
+**Response → `summary`:**
+
+| Field | Description |
+|-------|-------------|
+| `totalSkus` | Total SKUs in catalog |
+| `totalUnits` | Sum of all available stock |
+| `inStock` | SKUs with stock ≥ 10 |
+| `lowStock` | SKUs with stock 1–9 |
+| `outOfStock` | SKUs with stock = 0 |
+| `fulfillmentType` | Always `"FBM"` |
+
+**Response → `items`** (per-SKU):
+
+```json
+[{
+  "sku": "ABC-123",
+  "asin": "B0XXXXXXX",
+  "name": "Product Name",
+  "category": "Electronics",
+  "brand": "BrandName",
+  "stock": 50,
+  "inboundQty": 0,
+  "reservedQty": 0,
+  "status": "in-stock",
+  "fulfillment": "FBM",
+  "costs": {
+    "costPerUnit": 150,
+    "packagingCost": 10,
+    "shippingCostInternal": 25,
+    "totalCostPerUnit": 185
+  },
+  "health": {
+    "avgDailySales7d": 2.5,
+    "daysInventory": 20,
+    "riskStatus": "green"
+  }
+}]
+```
+
+**Per-SKU fields:**
+
+| Field | Source | Note |
+|-------|--------|------|
+| `category`, `brand` | `skus` table | May be empty if not set |
+| `costs.costPerUnit` | `skus.cost_per_unit` | Product cost |
+| `costs.packagingCost` | `skus.packaging_cost` | Packaging cost |
+| `costs.shippingCostInternal` | `skus.shipping_cost_internal` | Internal shipping cost |
+| `costs.totalCostPerUnit` | Sum of above 3 costs | Total landed cost |
+| `health.avgDailySales7d` | `inventory_health` table | 7-day average daily sales |
+| `health.daysInventory` | `inventory_health` table | Days of stock remaining |
+| `health.riskStatus` | `inventory_health` table | `"red"`, `"yellow"`, or `"green"` |
+
+**Pagination** — same format as SKU Performance endpoint.
+
+---
+
 ## 5. Error Handling
 
 ### Success Response
@@ -762,7 +836,8 @@ function Dashboard() {
 | **Sales** | `/api/external/sales-revenue` | `period` | Revenue chart, slow movers |
 | **Inventory** | `/api/external/inventory` | `period` | Stock levels, out-of-stock alerts |
 | **SKU** | `/api/external/sku-performance` | `period`, `page`, `limit`, `sort`, `order` | Product table with pagination |
+| **FBM Catalog** | `/api/external/fbm-catalog` | `page`, `limit`, `sort`, `order`, `status` | SKU details, costs, inventory health |
 
 ---
 
-*Last updated: March 3, 2026*
+*Last updated: March 5, 2026*
