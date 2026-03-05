@@ -253,6 +253,11 @@ export function calculateRevenue(input: EngineInput): EngineOutput {
   }
 
   // ── Step 3: Process every financial event ──
+  // Track which order+SKU pairs have already had their quantity counted.
+  // The sync script stores the same QuantityShipped on EVERY ItemChargeList
+  // entry (Principal, Tax, TCS-IGST, etc.), so without dedup we inflate by ~3x.
+  const quantityCounted = new Set<string>();
+
   for (const evt of events) {
     const orderId = evt.amazon_order_id || 'NO_ORDER';
     const sku = evt.sku || 'UNKNOWN';
@@ -276,7 +281,15 @@ export function calculateRevenue(input: EngineInput): EngineOutput {
       // ═══════════════════════════════════════════════════════════════════
       case 'shipment': {
         rec.transaction_types.add('Order');
-        rec.quantity += Number(evt.quantity) || 0;
+
+        // Only count quantity ONCE per order+SKU. The DB has multiple shipment
+        // rows per item (one per charge type: Principal, Tax, TCS-IGST, etc.),
+        // each carrying the same QuantityShipped. Summing all would inflate ~3x.
+        const qtyKey = `${orderId}|${sku}`;
+        if (!quantityCounted.has(qtyKey) && (Number(evt.quantity) || 0) > 0) {
+          rec.quantity += Number(evt.quantity) || 0;
+          quantityCounted.add(qtyKey);
+        }
 
         // Classify charge type from reference_id / amount_description
         const desc = (evt.amount_description || '').toLowerCase();
@@ -331,12 +344,12 @@ export function calculateRevenue(input: EngineInput): EngineOutput {
           rec.technology_fee += absAmount;
           rec.transaction_types.add('Order');
 
-        // ── Shipping Services (MFN/Easy Ship) ──
+          // ── Shipping Services (MFN/Easy Ship) ──
         } else if (feeType.includes('mfnpostage') || feeType.includes('shippinglabel') || feeType.includes('shippingcharge') || feeType.includes('forwardshipping') || feeType.includes('returnshipping') || feeType.includes('shippingchargeback')) {
           rec.shipping_chargeback += absAmount;
           rec.transaction_types.add('ShippingServices');
 
-        // ── Taxes ──
+          // ── Taxes ──
         } else if (feeType.includes('tcs') || feeType === 'tcs-cgst' || feeType === 'tcs-sgst' || feeType === 'tcs-igst') {
           rec.tcs += absAmount;
         } else if (feeType.includes('tds')) {
@@ -344,7 +357,7 @@ export function calculateRevenue(input: EngineInput): EngineOutput {
         } else if (feeType.includes('gst') || feeType.includes('igst') || feeType.includes('cgst') || feeType.includes('sgst')) {
           rec.gst += absAmount;
 
-        // ── Service Fees ──
+          // ── Service Fees ──
         } else if (feeType.includes('longtermstorage') || feeType.includes('longterm')) {
           rec.long_term_storage_fees += absAmount;
           rec.transaction_types.add('ServiceFee');
@@ -358,7 +371,7 @@ export function calculateRevenue(input: EngineInput): EngineOutput {
           rec.ad_spend += absAmount;
           rec.transaction_types.add('ServiceFee');
 
-        // ── Other ──
+          // ── Other ──
         } else {
           rec.other_fees += absAmount;
         }
