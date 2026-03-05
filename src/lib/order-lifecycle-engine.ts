@@ -1,37 +1,38 @@
 // ============================================================================
-// Order Lifecycle Engine — Closed Order Detection System
+// Order Lifecycle Engine — Settlement-Based Closed Order Detection
 // ============================================================================
-// Simple, clean approach:
-//
 // Pipeline:
-//   SP-API → Data Sync → Financial Event Parser → Order Lifecycle Engine →
-//   Closed Order Detector → Analytics Database
+//   Amazon SP-API → Sync Worker → Financial Event Parser → DB →
+//   Order Lifecycle Engine → Closed Order Detector → Analytics Database
 //
-// Financial Status States:
-//   OPEN                         → Order placed, not yet delivered
-//   DELIVERED_PENDING_SETTLEMENT → Delivered but return window hasn't expired
-//   FINANCIALLY_CLOSED           → Delivery + 30 day return window expired, no refund
+// Financial Status States (based on ACTUAL settlement/disbursement):
+//   OPEN                         → No financial transactions recorded (Pending)
+//   DELIVERED_PENDING_SETTLEMENT → Transactions exist but settlement is still
+//                                  Open OR Closed but NOT yet disbursed (Posted/Closed)
+//   FINANCIALLY_CLOSED           → ALL settlements are Closed AND
+//                                  fund_transfer_status = 'Succeeded' (Disbursed)
 //
 // Closure Condition:
-//   delivery_date + 30 days < current_date AND no refund on the order
+//   All transactions for this order belong to closed settlements
+//   AND all those settlements have been disbursed (fund_transfer_status = 'Succeeded')
 //
-// Example:
-//   Order Date: Jan 1 → Delivered: Jan 5 → Return Window: 30 days (Feb 4)
-//   Settlement: Jan 12 → Refund: None → Marked as FINANCIALLY_CLOSED
+// This replaces the old delivery_date + 30 day approximation with REAL
+// settlement data from Amazon's financial event groups.
 // ============================================================================
 
 import { supabase, fetchAllRows } from './supabase';
 
-// ── Configuration ────────────────────────────────────────────────────────────
-
-/** Days after delivery before return window expires — Amazon India standard */
-const RETURN_WINDOW_DAYS = 30;
-
-/** Total safe window = 30 days after delivery (return window only, no settlement check) */
-const TOTAL_SAFE_WINDOW_DAYS = RETURN_WINDOW_DAYS;
-
 /** Batch size for DB updates */
 const BATCH_SIZE = 200;
+
+/**
+ * Settlement-level status for an order:
+ *   Unsettled  → No financial transactions found (maps to OPEN)
+ *   Open       → Transactions exist, at least one settlement is Open (maps to DELIVERED_PENDING_SETTLEMENT)
+ *   Closed     → All settlements are Closed (maps to DELIVERED_PENDING_SETTLEMENT)
+ *   Disbursed  → All settlements are Closed + fund_transfer_status = Succeeded (maps to FINANCIALLY_CLOSED)
+ */
+export type SettlementResolution = 'Unsettled' | 'Open' | 'Closed' | 'Disbursed';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,9 @@ export interface LifecycleStats {
   closure_rate: number;
   avg_days_to_close: number;
   oldest_unclosed_date: string | null;
+  finalized_till_date: string | null;
+  finalized_revenue: number;
+  finalized_order_count: number;
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -129,98 +133,154 @@ async function computeLastEventDates(): Promise<Map<string, { lastDate: string; 
 }
 
 // ── Step 2: Resolve settlement status per order ──────────────────────────────
+// Uses settlement_items → financial_event_groups to determine true settlement
+// and disbursement status for each order.
 
-async function resolveSettlementStatuses(): Promise<Map<string, { settlementId: string; status: 'Open' | 'Closed' }>> {
-  const map = new Map<string, { settlementId: string; status: 'Open' | 'Closed' }>();
+interface OrderSettlementInfo {
+  settlementId: string;
+  resolution: SettlementResolution;  // Unsettled | Open | Closed | Disbursed
+  allSettlementIds: string[];
+}
 
-  // Get event_group_id → settlement status mapping
+async function resolveSettlementStatuses(): Promise<Map<string, OrderSettlementInfo>> {
+  const map = new Map<string, OrderSettlementInfo>();
+
+  // 1. Fetch all settlement group statuses (processing_status + fund_transfer_status)
   const { data: groups } = await supabase
     .from('financial_event_groups')
-    .select('event_group_id, processing_status');
+    .select('event_group_id, processing_status, fund_transfer_status');
 
-  const groupStatusMap = new Map<string, 'Open' | 'Closed'>();
+  const groupInfoMap = new Map<string, { closed: boolean; disbursed: boolean }>();
   for (const g of (groups || [])) {
-    groupStatusMap.set(g.event_group_id, g.processing_status === 'Closed' ? 'Closed' : 'Open');
+    groupInfoMap.set(g.event_group_id, {
+      closed: g.processing_status === 'Closed',
+      disbursed: g.processing_status === 'Closed' && g.fund_transfer_status === 'Succeeded',
+    });
   }
 
-  // Get order → event_group mappings from financial_events (paginated past 1k limit)
-  const eventLinks = await fetchAllRows(
-    'financial_events',
-    'amazon_order_id, event_group_id',
-    q => q.not('amazon_order_id', 'is', null).not('event_group_id', 'is', null),
+  // 2. Fetch settlement_items to link orders → settlement groups
+  //    settlement_items has (settlement_id, amazon_order_id) which gives us
+  //    the mapping from orders to their settlement groups.
+  const settlementItems = await fetchAllRows(
+    'settlement_items',
+    'settlement_id, amazon_order_id',
+    q => q.not('amazon_order_id', 'is', null),
   );
 
-  for (const link of (eventLinks || [])) {
-    const orderId = link.amazon_order_id;
-    const groupId = link.event_group_id;
-    if (!orderId || !groupId) continue;
+  // 3. Group by order — collect all settlement IDs per order
+  const orderSettlements = new Map<string, Set<string>>();
+  for (const item of (settlementItems || [])) {
+    const orderId = item.amazon_order_id;
+    if (!orderId) continue;
+    if (!orderSettlements.has(orderId)) orderSettlements.set(orderId, new Set());
+    orderSettlements.get(orderId)!.add(item.settlement_id);
+  }
 
-    const groupStatus = groupStatusMap.get(groupId) || 'Open';
-    const existing = map.get(orderId);
+  // 4. For each order, determine the resolution
+  for (const [orderId, settlementIds] of orderSettlements) {
+    const sids = [...settlementIds];
+    let allClosed = true;
+    let allDisbursed = true;
 
-    if (!existing) {
-      map.set(orderId, { settlementId: groupId, status: groupStatus });
-    } else {
-      // If ANY event group is Open, the order is not fully settled
-      if (groupStatus === 'Open') {
-        existing.status = 'Open';
+    for (const sid of sids) {
+      const info = groupInfoMap.get(sid);
+      if (!info) {
+        // Settlement group not found — treat as Open
+        allClosed = false;
+        allDisbursed = false;
+        break;
       }
-      // Keep the latest settlement ID
-      existing.settlementId = groupId;
+      if (!info.closed) {
+        allClosed = false;
+        allDisbursed = false;
+      } else if (!info.disbursed) {
+        allDisbursed = false;
+      }
     }
+
+    let resolution: SettlementResolution;
+    if (allDisbursed) {
+      resolution = 'Disbursed';
+    } else if (allClosed) {
+      resolution = 'Closed';
+    } else {
+      resolution = 'Open';
+    }
+
+    map.set(orderId, {
+      settlementId: sids[sids.length - 1], // latest
+      resolution,
+      allSettlementIds: sids,
+    });
   }
 
   return map;
 }
 
 // ── Step 3: Determine new financial status ───────────────────────────────────
+// Uses REAL settlement/disbursement status instead of delivery_date + 30 days.
+//
+// Mapping:
+//   Unsettled (no transactions)  → OPEN
+//   Open (settlement still open) → DELIVERED_PENDING_SETTLEMENT
+//   Closed (settled, not paid)   → DELIVERED_PENDING_SETTLEMENT
+//   Disbursed (settled + paid)   → FINANCIALLY_CLOSED ← this is the key change
 
 function determineFinancialStatus(
   order: {
     delivery_date: string | null;
     order_status: string;
   },
-  lastEventDate: string | null,
-  _settlementStatus: 'Unsettled' | 'Open' | 'Closed',
-  now: Date,
+  _lastEventDate: string | null,
+  settlementResolution: SettlementResolution,
+  _now: Date,
   hasRefund: boolean = false,
 ): { newStatus: FinancialStatus; returnDeadline: Date | null; reason: string } {
 
-  // ── No delivery date → stay OPEN ──
-  if (!order.delivery_date) {
-    if (order.order_status === 'Cancelled') {
+  // ── Cancelled orders → FINANCIALLY_CLOSED (no money will move) ──
+  if (order.order_status === 'Cancelled') {
+    return {
+      newStatus: 'FINANCIALLY_CLOSED',
+      returnDeadline: null,
+      reason: 'Cancelled order — no delivery expected',
+    };
+  }
+
+  // ── Determine status based on settlement resolution ──
+  switch (settlementResolution) {
+    case 'Disbursed':
+      // All settlements are Closed + funds transferred → FINANCIALLY_CLOSED
       return {
         newStatus: 'FINANCIALLY_CLOSED',
         returnDeadline: null,
-        reason: 'Cancelled order — no delivery expected',
+        reason: `All settlements Closed + Disbursed${hasRefund ? ' (includes refund)' : ''} — finalized`,
       };
-    }
-    return {
-      newStatus: 'OPEN',
-      returnDeadline: null,
-      reason: 'No delivery date available',
-    };
+
+    case 'Closed':
+      // All settlements Closed but funds not yet transferred
+      return {
+        newStatus: 'DELIVERED_PENDING_SETTLEMENT',
+        returnDeadline: null,
+        reason: 'All settlements Closed, awaiting disbursement',
+      };
+
+    case 'Open':
+      // Transactions exist but at least one settlement is still Open
+      return {
+        newStatus: 'DELIVERED_PENDING_SETTLEMENT',
+        returnDeadline: null,
+        reason: 'Settlement still Open — transactions not yet finalized',
+      };
+
+    case 'Unsettled':
+    default:
+      // No financial transactions recorded for this order
+      return {
+        newStatus: 'OPEN',
+        returnDeadline: null,
+        reason: 'No financial transactions found in any settlement',
+      };
   }
-
-  const deliveryDate = new Date(order.delivery_date);
-  const returnDeadline = addDays(deliveryDate, TOTAL_SAFE_WINDOW_DAYS);
-
-  // ── Return window still active (delivery + 30 days not yet passed) ──
-  if (now < returnDeadline) {
-    return {
-      newStatus: 'DELIVERED_PENDING_SETTLEMENT',
-      returnDeadline,
-      reason: `Delivered, return window expires ${returnDeadline.toISOString().slice(0, 10)}`,
-    };
-  }
-
-  // ── Delivery + 30 days passed → FINANCIALLY_CLOSED ──
-  // Refunded or not — after 30 days, figures are final
-  return {
-    newStatus: 'FINANCIALLY_CLOSED',
-    returnDeadline,
-    reason: `Delivery + 30d expired (${returnDeadline.toISOString().slice(0, 10)})${hasRefund ? ', has refund' : ', no refund'} — closed`,
-  };
 }
 
 // ── Main Engine: Detect & Update Closed Orders ───────────────────────────────
@@ -302,17 +362,21 @@ export async function detectClosedOrders(
       const eventCount = eventData?.count || 0;
       const netAmount = eventData?.netAmount || 0;
 
-      // Get settlement data
+      // Get settlement data from settlement_items → financial_event_groups
       const settlementData = settlementMap.get(orderId);
       const settlementId = settlementData?.settlementId || null;
-      const settlementStatus: 'Unsettled' | 'Open' | 'Closed' = settlementData?.status || 'Unsettled';
+      const settlementResolution: SettlementResolution = settlementData?.resolution || 'Unsettled';
+      // Map resolution to legacy settlement_status for backward compat
+      const settlementStatus: string = settlementResolution === 'Disbursed' ? 'Closed'
+        : settlementResolution === 'Closed' ? 'Closed'
+          : settlementResolution === 'Open' ? 'Open' : 'Unsettled';
 
-      // Determine new status
+      // Determine new status based on settlement/disbursement
       const hasRefund = refundOrderIds.has(orderId);
       const { newStatus, returnDeadline, reason } = determineFinancialStatus(
         { delivery_date: order.delivery_date, order_status: order.order_status },
         lastEventDate,
-        settlementStatus,
+        settlementResolution,
         now,
         hasRefund,
       );
@@ -448,7 +512,7 @@ export async function detectClosedOrders(
 export async function getLifecycleStats(): Promise<LifecycleStats> {
   const { data: orders, error } = await supabase
     .from('orders')
-    .select('financial_status, delivery_date, financial_closed_at, purchase_date');
+    .select('financial_status, delivery_date, financial_closed_at, purchase_date, net_settlement_amount');
 
   if (error || !orders) {
     return {
@@ -459,6 +523,9 @@ export async function getLifecycleStats(): Promise<LifecycleStats> {
       closure_rate: 0,
       avg_days_to_close: 0,
       oldest_unclosed_date: null,
+      finalized_till_date: null,
+      finalized_revenue: 0,
+      finalized_order_count: 0,
     };
   }
 
@@ -493,6 +560,39 @@ export async function getLifecycleStats(): Promise<LifecycleStats> {
   }
 
   const total = orders.length;
+
+  // ── Compute "Payments Finalized Till Date" ──
+  // Group orders by purchase_date (day). Walk from earliest to latest.
+  // Finalized-till = the latest date where ALL orders on that date are FINANCIALLY_CLOSED.
+  const dayOrders = new Map<string, { total: number; closed: number; revenue: number }>();
+  for (const o of orders) {
+    if (!o.purchase_date) continue;
+    const day = o.purchase_date.slice(0, 10);
+    if (!dayOrders.has(day)) dayOrders.set(day, { total: 0, closed: 0, revenue: 0 });
+    const d = dayOrders.get(day)!;
+    d.total++;
+    if ((o.financial_status || 'OPEN') === 'FINANCIALLY_CLOSED') {
+      d.closed++;
+      d.revenue += Number(o.net_settlement_amount) || 0;
+    }
+  }
+
+  const sortedDays = [...dayOrders.keys()].sort();
+  let finalizedTillDate: string | null = null;
+  let finalizedRevenue = 0;
+  let finalizedOrderCount = 0;
+
+  for (const day of sortedDays) {
+    const d = dayOrders.get(day)!;
+    if (d.total === d.closed) {
+      finalizedTillDate = day;
+      finalizedRevenue += d.revenue;
+      finalizedOrderCount += d.total;
+    } else {
+      break; // Gap found — stop advancing
+    }
+  }
+
   return {
     total_orders: total,
     open,
@@ -501,6 +601,9 @@ export async function getLifecycleStats(): Promise<LifecycleStats> {
     closure_rate: total > 0 ? Math.round((closed / total) * 10000) / 100 : 0,
     avg_days_to_close: closedWithDates > 0 ? Math.round(totalDaysToClose / closedWithDates) : 0,
     oldest_unclosed_date: oldestUnclosed,
+    finalized_till_date: finalizedTillDate,
+    finalized_revenue: Math.round(finalizedRevenue * 100) / 100,
+    finalized_order_count: finalizedOrderCount,
   };
 }
 
