@@ -179,6 +179,10 @@ export async function GET(request: Request) {
     if (!statusFilter || statusFilter === 'FINANCIALLY_CLOSED') {
       // Default: only truly closed orders — solid, immutable figures
       records = records.filter(r => r.financial_status === 'FINANCIALLY_CLOSED');
+    } else if (statusFilter === 'finalized') {
+      // Will be post-filtered after finalizedTillDate is computed (step 9b).
+      // For now, include all non-OPEN records so we have the full dataset.
+      records = records.filter(r => r.financial_status !== 'OPEN' && r.order_id !== 'NO_ORDER');
     } else if (statusFilter === 'all') {
       // All settled (non-OPEN) orders — may still change
       records = records.filter(r => SETTLED_STATES.includes(r.financial_status));
@@ -368,6 +372,92 @@ export async function GET(request: Request) {
       }
     }
 
+    // ── 9b-post. If status=finalized, post-filter records to only those on/before finalizedTillDate ──
+    if (statusFilter === 'finalized' && finalizedTillDate) {
+      records = records.filter(r => {
+        if (!r.order_date) return false;
+        const day = r.order_date.slice(0, 10);
+        if (day > finalizedTillDate) return false;
+        // Respect EXCLUDE overrides
+        const ov = overrideMap.get(r.order_id);
+        if (ov === 'EXCLUDE') return false;
+        return true;
+      });
+
+      // Recompute closedSummary for finalized-only records
+      closedSummary.total_orders = records.length;
+      closedSummary.total_units = 0;
+      closedSummary.gross_revenue = 0;
+      closedSummary.total_product_sales = 0;
+      closedSummary.total_shipping_credits = 0;
+      closedSummary.total_promotional_rebates = 0;
+      closedSummary.total_amazon_fees = 0;
+      closedSummary.total_referral_fees = 0;
+      closedSummary.total_closing_fees = 0;
+      closedSummary.total_fba_fees = 0;
+      closedSummary.total_easy_ship_fees = 0;
+      closedSummary.total_weight_handling = 0;
+      closedSummary.total_technology_fees = 0;
+      closedSummary.total_other_charges = 0;
+      closedSummary.total_shipping_chargeback = 0;
+      closedSummary.total_storage_fees = 0;
+      closedSummary.total_adjustment_fees = 0;
+      closedSummary.total_other_fees = 0;
+      closedSummary.total_gst = 0;
+      closedSummary.total_tcs = 0;
+      closedSummary.total_tds = 0;
+      closedSummary.total_taxes = 0;
+      closedSummary.total_refund_impact = 0;
+      closedSummary.total_refund_amount = 0;
+      closedSummary.returned_orders = 0;
+      closedSummary.rto_orders = 0;
+      closedSummary.customer_returns = 0;
+      closedSummary.total_ad_spend = 0;
+      closedSummary.net_settlement = 0;
+
+      for (const r of records) {
+        closedSummary.total_units += r.quantity;
+        closedSummary.total_product_sales += r.product_sales;
+        closedSummary.total_shipping_credits += r.shipping_credits;
+        closedSummary.total_promotional_rebates += r.promotional_rebates;
+        closedSummary.gross_revenue += r.calculations.gross_revenue;
+        closedSummary.total_amazon_fees += r.amazon_fees.total;
+        closedSummary.total_referral_fees += r.amazon_fees.referral_fee;
+        closedSummary.total_closing_fees += r.amazon_fees.closing_fee;
+        closedSummary.total_fba_fees += r.amazon_fees.fba_fee;
+        closedSummary.total_easy_ship_fees += r.amazon_fees.easy_ship_fee;
+        closedSummary.total_weight_handling += r.amazon_fees.weight_handling_fee;
+        closedSummary.total_technology_fees += r.amazon_fees.technology_fee;
+        closedSummary.total_other_charges += r.other_charges.total;
+        closedSummary.total_shipping_chargeback += r.other_charges.shipping_chargeback;
+        closedSummary.total_storage_fees += r.other_charges.storage_fees;
+        closedSummary.total_adjustment_fees += r.other_charges.adjustment_fees;
+        closedSummary.total_other_fees += r.other_charges.other_fees;
+        closedSummary.total_gst += r.taxes.gst;
+        closedSummary.total_tcs += r.taxes.tcs;
+        closedSummary.total_tds += r.taxes.tds;
+        closedSummary.total_taxes += r.taxes.total;
+        closedSummary.total_refund_impact += r.return_details.total_refund_impact;
+        closedSummary.total_refund_amount += r.return_details.refund_amount;
+        if (r.return_details.is_returned) closedSummary.returned_orders++;
+        if (r.return_details.return_type === 'RTO') closedSummary.rto_orders++;
+        if (r.return_details.return_type === 'Customer Return') closedSummary.customer_returns++;
+        closedSummary.total_ad_spend += r.ad_spend;
+        closedSummary.net_settlement += r.calculations.net_settlement;
+      }
+
+      for (const key of Object.keys(closedSummary)) {
+        const v = (closedSummary as any)[key];
+        if (typeof v === 'number' && !Number.isInteger(v)) {
+          (closedSummary as any)[key] = Math.round(v * 100) / 100;
+        }
+      }
+    } else if (statusFilter === 'finalized' && !finalizedTillDate) {
+      // No finalized date found — return empty results
+      records = [];
+      closedSummary.total_orders = 0;
+    }
+
     const lifecycleStats = {
       total_orders: total,
       ...distribution,
@@ -388,6 +478,91 @@ export async function GET(request: Request) {
       finalized_order_count: finalizedOrderCount,
     };
 
+    // ── 9c. Compute summary for ONLY finalized orders (on or before finalized_till_date) ──
+    // These are the truly solid figures — all orders on these days are closed or overridden.
+    const finalizedSummary = {
+      total_orders: 0,
+      total_units: 0,
+      gross_revenue: 0,
+      total_product_sales: 0,
+      total_shipping_credits: 0,
+      total_promotional_rebates: 0,
+      total_amazon_fees: 0,
+      total_referral_fees: 0,
+      total_closing_fees: 0,
+      total_fba_fees: 0,
+      total_easy_ship_fees: 0,
+      total_weight_handling: 0,
+      total_technology_fees: 0,
+      total_other_charges: 0,
+      total_shipping_chargeback: 0,
+      total_storage_fees: 0,
+      total_adjustment_fees: 0,
+      total_other_fees: 0,
+      total_gst: 0,
+      total_tcs: 0,
+      total_tds: 0,
+      total_taxes: 0,
+      total_refund_impact: 0,
+      total_refund_amount: 0,
+      returned_orders: 0,
+      rto_orders: 0,
+      customer_returns: 0,
+      total_ad_spend: 0,
+      net_settlement: 0,
+    };
+
+    if (finalizedTillDate) {
+      for (const r of allRecords) {
+        if (!r.order_date) continue;
+        if (r.order_id === 'NO_ORDER') continue;
+        const day = r.order_date.slice(0, 10);
+        if (day > finalizedTillDate) continue;
+
+        // Check override — skip EXCLUDE orders entirely
+        const ov = overrideMap.get(r.order_id);
+        if (ov === 'EXCLUDE') continue;
+
+        finalizedSummary.total_orders++;
+        finalizedSummary.total_units += r.quantity;
+        finalizedSummary.total_product_sales += r.product_sales;
+        finalizedSummary.total_shipping_credits += r.shipping_credits;
+        finalizedSummary.total_promotional_rebates += r.promotional_rebates;
+        finalizedSummary.gross_revenue += r.calculations.gross_revenue;
+        finalizedSummary.total_amazon_fees += r.amazon_fees.total;
+        finalizedSummary.total_referral_fees += r.amazon_fees.referral_fee;
+        finalizedSummary.total_closing_fees += r.amazon_fees.closing_fee;
+        finalizedSummary.total_fba_fees += r.amazon_fees.fba_fee;
+        finalizedSummary.total_easy_ship_fees += r.amazon_fees.easy_ship_fee;
+        finalizedSummary.total_weight_handling += r.amazon_fees.weight_handling_fee;
+        finalizedSummary.total_technology_fees += r.amazon_fees.technology_fee;
+        finalizedSummary.total_other_charges += r.other_charges.total;
+        finalizedSummary.total_shipping_chargeback += r.other_charges.shipping_chargeback;
+        finalizedSummary.total_storage_fees += r.other_charges.storage_fees;
+        finalizedSummary.total_adjustment_fees += r.other_charges.adjustment_fees;
+        finalizedSummary.total_other_fees += r.other_charges.other_fees;
+        finalizedSummary.total_gst += r.taxes.gst;
+        finalizedSummary.total_tcs += r.taxes.tcs;
+        finalizedSummary.total_tds += r.taxes.tds;
+        finalizedSummary.total_taxes += r.taxes.total;
+        finalizedSummary.total_refund_impact += r.return_details.total_refund_impact;
+        finalizedSummary.total_refund_amount += r.return_details.refund_amount;
+        if (r.return_details.is_returned) finalizedSummary.returned_orders++;
+        if (r.return_details.return_type === 'RTO') finalizedSummary.rto_orders++;
+        if (r.return_details.return_type === 'Customer Return') finalizedSummary.customer_returns++;
+        finalizedSummary.total_ad_spend += r.ad_spend;
+        finalizedSummary.net_settlement += r.calculations.net_settlement;
+      }
+
+      // Round
+      for (const key of Object.keys(finalizedSummary)) {
+        const v = (finalizedSummary as any)[key];
+        if (typeof v === 'number' && !Number.isInteger(v)) {
+          (finalizedSummary as any)[key] = Math.round(v * 100) / 100;
+        }
+      }
+    }
+
     // ── 10. Paginate ──
     const totalRecords = records.length;
     const totalPages = Math.ceil(totalRecords / pageSize) || 1;
@@ -398,6 +573,7 @@ export async function GET(request: Request) {
       success: true,
       records: paginatedRecords,
       summary: closedSummary,
+      finalizedSummary: finalizedTillDate ? finalizedSummary : null,
       lifecycle: lifecycleStats,
       distribution,
       pagination: {

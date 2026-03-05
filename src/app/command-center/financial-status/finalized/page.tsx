@@ -6,11 +6,10 @@ import { useFetch } from '@/hooks/useFetch';
 import OrderDetailPanel from '@/components/revenue-calculator/OrderDetailPanel';
 import type { OrderRevenueRecord } from '@/lib/revenue-types';
 import {
-    Lock, Unlock, Clock, Shield, CheckCircle2, AlertTriangle, Search,
-    ChevronDown, ChevronUp, ChevronLeft, ChevronRight, ArrowUpDown,
-    RefreshCw, Download, Calendar, IndianRupee, TrendingDown, RotateCcw,
-    Package, Loader2, Zap, Play, History, Filter,
-    ShoppingCart, Truck, ArrowLeftRight, FileText, Eye,
+    Lock, Shield, ArrowLeft, Search, ChevronDown, ChevronUp, ChevronLeft,
+    ChevronRight, ArrowUpDown, RefreshCw, Download, IndianRupee, TrendingDown,
+    RotateCcw, Package, Loader2, AlertTriangle, CheckCircle2, Calendar,
+    ShoppingCart, Truck, ArrowLeftRight, Zap,
 } from 'lucide-react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -55,53 +54,23 @@ interface LifecycleData {
     settled_count: number;
     closure_rate: number;
     settlement_rate: number;
-    // Closure timeline
-    earliest_delivery: string | null;
-    earliest_eligible_date: string | null;
-    days_until_first_eligible: number;
-    refunded_count: number;
-    eligible_for_closure: number;
-    // Finalized till date
     finalized_till_date: string | null;
     finalized_revenue: number;
     finalized_order_count: number;
 }
 
-interface RunResult {
-    id: string;
-    run_type: string;
-    started_at: string;
-    completed_at: string;
-    orders_processed: number;
-    orders_closed: number;
-    orders_promoted: number;
-    errors: string[];
-    duration_ms: number;
-}
+interface FinalizedSummary extends ClosedSummary {}
 
 interface FSResponse {
     success: boolean;
     records: OrderRevenueRecord[];
     summary: ClosedSummary;
+    finalizedSummary: FinalizedSummary | null;
     lifecycle: LifecycleData;
     distribution: Record<string, number>;
     pagination: { page: number; pageSize: number; totalRecords: number; totalPages: number };
     dateRange: { start: string; end: string; filtered: boolean };
 }
-
-interface StatsResponse {
-    success: boolean;
-    stats: any;
-    runs: RunResult[];
-}
-
-// ── Constants ────────────────────────────────────────────────────────────────
-
-const STATUS_TABS = [
-    { key: 'FINANCIALLY_CLOSED', label: '🔒 Financially Closed', icon: Lock, solid: true },
-    { key: 'DELIVERED_PENDING_SETTLEMENT', label: 'Pending (Return Window)', icon: Clock, solid: false },
-    { key: 'all', label: 'All Settled', icon: Shield, solid: false },
-];
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 
@@ -131,27 +100,12 @@ function fmtDate(dateStr: string | null): string {
     } catch { return dateStr; }
 }
 
-function fmtDuration(ms: number): string {
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(1)}s`;
-}
-
-function fmtAgo(dateStr: string): string {
-    const diff = Date.now() - new Date(dateStr).getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return 'just now';
-    if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.floor(mins / 60);
-    if (hrs < 24) return `${hrs}h ago`;
-    return `${Math.floor(hrs / 24)}d ago`;
-}
-
 // ── Badges ───────────────────────────────────────────────────────────────────
 
 function FinancialStatusBadge({ status }: { status: string }) {
     const config: Record<string, { label: string; icon: any; style: string }> = {
-        OPEN: { label: 'Open', icon: Unlock, style: 'bg-slate-500/15 text-slate-400 border-slate-500/20' },
-        DELIVERED_PENDING_SETTLEMENT: { label: 'Pending', icon: Clock, style: 'bg-amber-500/15 text-amber-400 border-amber-500/20' },
+        OPEN: { label: 'Open', icon: Lock, style: 'bg-slate-500/15 text-slate-400 border-slate-500/20' },
+        DELIVERED_PENDING_SETTLEMENT: { label: 'Pending', icon: Lock, style: 'bg-amber-500/15 text-amber-400 border-amber-500/20' },
         FINANCIALLY_CLOSED: { label: 'Closed', icon: Lock, style: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20' },
     };
     const c = config[status] || config.OPEN;
@@ -205,46 +159,41 @@ function TxnTypeBadge({ types }: { types: string[] }) {
 
 // ── Main Page ────────────────────────────────────────────────────────────────
 
-export default function FinancialStatusPage() {
+export default function FinalizedFiguresPage() {
     const [startDate, setStartDate] = useState('');
     const [endDate, setEndDate] = useState('');
-    const [statusFilter, setStatusFilter] = useState('FINANCIALLY_CLOSED');
     const [search, setSearch] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
     const [expandedRow, setExpandedRow] = useState<string | null>(null);
     const [sortBy, setSortBy] = useState<string>('order_date');
     const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
-    const [detecting, setDetecting] = useState(false);
-    const [detectResult, setDetectResult] = useState<string | null>(null);
-    const [showRuns, setShowRuns] = useState(false);
 
     const isAllTime = !startDate && !endDate;
 
-    // Build query — only send dates if user picked them
+    // Fetch with status=finalized — the API will filter to orders on/before finalizedTillDate
     const queryStr = useMemo(() => {
         const p = new URLSearchParams();
         if (startDate) p.set('startDate', startDate);
         if (endDate) p.set('endDate', endDate);
-        p.set('status', statusFilter);
+        p.set('status', 'finalized');
         if (search) p.set('search', search);
         p.set('page', String(currentPage));
         p.set('pageSize', '50');
         return p.toString();
-    }, [startDate, endDate, statusFilter, search, currentPage]);
+    }, [startDate, endDate, search, currentPage]);
 
     const { data, loading, error, refresh } = useFetch<FSResponse>(
         `/api/command-center/financial-status-detail?${queryStr}`, [queryStr]
-    );
-
-    const { data: statsData, refresh: refreshStats } = useFetch<StatsResponse>(
-        '/api/command-center/financial-status-detail?action=stats', []
     );
 
     const records = data?.records || [];
     const summary = data?.summary;
     const lifecycle = data?.lifecycle;
     const pagination = data?.pagination;
-    const runs = statsData?.runs || [];
+    const finalizedSummary = data?.finalizedSummary;
+
+    // Use finalizedSummary if available (more accurate), otherwise fall back to summary
+    const displaySummary = finalizedSummary || summary;
 
     // Client-side sort
     const sortedRecords = useMemo(() => {
@@ -266,7 +215,7 @@ export default function FinancialStatusPage() {
         return sorted;
     }, [records, sortBy, sortDir]);
 
-    // Group sorted records by order_id for visual grouping
+    // Group sorted records by order_id
     const groupedRecords = useMemo(() => {
         const groups: { orderId: string; items: OrderRevenueRecord[] }[] = [];
         let currentGroup: { orderId: string; items: OrderRevenueRecord[] } | null = null;
@@ -284,25 +233,6 @@ export default function FinancialStatusPage() {
     const handleSort = (field: string) => {
         if (sortBy === field) setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
         else { setSortBy(field); setSortDir('desc'); }
-    };
-
-    const handleDetect = async () => {
-        setDetecting(true);
-        setDetectResult(null);
-        try {
-            const res = await fetch('/api/command-center/financial-status-detail', { method: 'POST' });
-            const json = await res.json();
-            if (json.error) throw new Error(json.error);
-            const r = json.result;
-            setDetectResult(
-                `✅ Detection complete in ${fmtDuration(r.duration_ms)} — ${r.orders_processed} processed, ${r.orders_promoted} promoted, ${r.orders_closed} closed`
-            );
-            setTimeout(() => { refresh(); refreshStats(); }, 500);
-        } catch (err: any) {
-            setDetectResult(`❌ Error: ${err.message}`);
-        } finally {
-            setDetecting(false);
-        }
     };
 
     const handleExportCSV = () => {
@@ -335,50 +265,55 @@ export default function FinancialStatusPage() {
         const blob = new Blob([csv], { type: 'text/csv' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url; a.download = `financial-status-${startDate || 'all'}-to-${endDate || 'now'}-${statusFilter}.csv`;
-        a.click(); URL.revokeObjectURL(url);
+        a.href = url;
+        a.download = `finalized-orders-${startDate || 'all'}-to-${endDate || 'now'}-till-${lifecycle?.finalized_till_date || 'unknown'}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
     };
+
+    const finalizedDate = lifecycle?.finalized_till_date;
+    const finalizedDateFormatted = finalizedDate
+        ? new Date(finalizedDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+        : '—';
 
     return (
         <DashboardLayout>
             {/* ── Header ── */}
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                <div>
-                    <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
-                        <Lock size={22} className="text-emerald-400" />
-                        Financial Status
-                        {statusFilter === 'FINANCIALLY_CLOSED' ? (
+                <div className="flex items-center gap-3">
+                    <Link href="/command-center/financial-status"
+                        className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-white/5 border border-white/10 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-all">
+                        <ArrowLeft size={14} />
+                        Back
+                    </Link>
+                    <div>
+                        <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
+                            <Lock size={22} className="text-emerald-400" />
+                            Solid Figures
                             <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-widest px-2.5 py-1 rounded-full border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
-                                <Lock size={10} />
-                                Solid Figures
+                                <Shield size={10} />
+                                Finalized
                             </span>
-                        ) : (
-                            <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-widest px-2.5 py-1 rounded-full border bg-amber-500/10 text-amber-400 border-amber-500/20">
-                                <AlertTriangle size={10} />
-                                May Change
-                            </span>
-                        )}
-                    </h1>
-                    <p className="text-sm text-slate-500 mt-1">
-                        {statusFilter === 'FINANCIALLY_CLOSED'
-                            ? 'Settlement closed + disbursed = solid, final revenue'
-                            : 'Showing orders awaiting settlement/disbursement — figures may change'}
-                        {data?.dateRange && (
-                            isAllTime
-                                ? ' · All Time'
-                                : ` · ${data.dateRange.start} → ${data.dateRange.end}`
-                        )}
-                    </p>
+                        </h1>
+                        <p className="text-sm text-slate-500 mt-1">
+                            All figures below are <span className="text-emerald-400 font-medium">final &amp; immutable</span> — every order on these dates is financially closed
+                            {data?.dateRange && (
+                                isAllTime
+                                    ? ' · All Time'
+                                    : ` · ${data.dateRange.start} → ${data.dateRange.end}`
+                            )}
+                        </p>
+                    </div>
                 </div>
                 <div className="flex items-center gap-3 flex-wrap">
-                    {/* Date Range Selector */}
+                    {/* Date Range Filter */}
                     <div className="flex items-center gap-2">
                         <button
                             onClick={() => { setStartDate(''); setEndDate(''); setCurrentPage(1); }}
                             className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all border ${isAllTime
                                 ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 shadow-sm'
                                 : 'bg-white/5 text-slate-400 border-white/10 hover:text-white hover:bg-white/10'
-                                }`}>
+                            }`}>
                             All Time
                         </button>
                         <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-xl px-2.5 py-1">
@@ -393,44 +328,19 @@ export default function FinancialStatusPage() {
                         </div>
                     </div>
 
-                    {/* Detect Button */}
-                    <button onClick={handleDetect} disabled={detecting}
-                        className="flex items-center gap-2 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-sm text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-50">
-                        {detecting ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-                        {detecting ? 'Detecting...' : 'Run Detection'}
-                    </button>
-
-                    <button onClick={() => setShowRuns(!showRuns)}
-                        className="flex items-center gap-2 px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-sm text-slate-300 hover:border-white/20 transition-all">
-                        <History size={14} />
-                        Runs
-                    </button>
-
                     <button onClick={() => refresh()} disabled={loading}
                         className="flex items-center gap-2 px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-sm text-slate-300 hover:border-white/20 transition-all disabled:opacity-50">
                         <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
                     </button>
-
                     <button onClick={handleExportCSV} disabled={!records.length}
                         className="flex items-center gap-2 px-3 py-2 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-sm text-indigo-400 hover:bg-indigo-500/20 transition-all disabled:opacity-50">
                         <Download size={14} />
-                        CSV
+                        Export CSV
                     </button>
                 </div>
             </div>
 
-            {/* Detection result banner */}
-            {detectResult && (
-                <div className={`flex items-center gap-2 p-3 rounded-xl text-xs font-medium ${detectResult.startsWith('❌')
-                    ? 'bg-red-500/10 border border-red-500/20 text-red-400'
-                    : 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400'
-                    }`}>
-                    <Zap size={12} />{detectResult}
-                    <button onClick={() => setDetectResult(null)} className="ml-auto text-slate-500 hover:text-white">✕</button>
-                </div>
-            )}
-
-            {/* Error banner */}
+            {/* Error */}
             {error && (
                 <div className="flex items-center gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
                     <AlertTriangle size={18} className="text-red-400 shrink-0" />
@@ -439,105 +349,63 @@ export default function FinancialStatusPage() {
                 </div>
             )}
 
-            {/* ── Run History Panel ── */}
-            {showRuns && runs.length > 0 && (
-                <div className="bg-[#111827]/80 border border-white/[0.06] rounded-xl p-4">
-                    <h3 className="text-xs font-semibold text-white mb-3 flex items-center gap-2">
-                        <History size={14} className="text-indigo-400" />
-                        Recent Detection Runs
-                    </h3>
-                    <div className="space-y-2 max-h-[200px] overflow-y-auto">
-                        {runs.map((run, i) => (
-                            <div key={run.id || i} className="flex items-center gap-4 p-2.5 bg-white/[0.02] border border-white/5 rounded-lg">
-                                <span className={`px-2 py-0.5 text-[9px] font-semibold rounded-full border ${run.run_type === 'manual' ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/20' : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20'}`}>
-                                    {run.run_type}
-                                </span>
-                                <span className="text-[11px] text-slate-400">{fmtAgo(run.started_at)}</span>
-                                <span className="text-[11px] text-slate-300">{run.orders_processed} processed</span>
-                                <span className="text-[11px] text-amber-400">{run.orders_promoted} promoted</span>
-                                <span className="text-[11px] text-emerald-400">{run.orders_closed} closed</span>
-                                <span className="text-[11px] text-slate-500 ml-auto">{fmtDuration(run.duration_ms)}</span>
-                                {run.errors?.length > 0 && (
-                                    <span className="text-[10px] text-red-400">⚠ {run.errors.length} errors</span>
-                                )}
+            {/* ── Hero Card: Finalized Date + Net Settlement ── */}
+            {lifecycle && lifecycle.finalized_till_date && (
+                <div className="bg-gradient-to-r from-emerald-500/10 via-emerald-500/5 to-transparent border border-emerald-500/20 rounded-xl p-6">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-5">
+                            <div className="w-14 h-14 rounded-2xl bg-emerald-500/20 flex items-center justify-center">
+                                <Shield size={28} className="text-emerald-400" />
                             </div>
-                        ))}
+                            <div>
+                                <p className="text-[10px] font-medium text-emerald-500 uppercase tracking-wider mb-1">Payments Finalized Till</p>
+                                <p className="text-3xl font-bold text-emerald-400">{finalizedDateFormatted}</p>
+                                <p className="text-xs text-slate-500 mt-1">
+                                    <span className="text-emerald-400 font-semibold">{lifecycle.finalized_order_count}</span> orders &middot;
+                                    All revenue on and before this date is <span className="text-emerald-400">solid &amp; final</span>
+                                </p>
+                            </div>
+                        </div>
+                        <div className="text-right">
+                            <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Net Settlement</p>
+                            <p className={`text-3xl font-bold ${(displaySummary?.net_settlement ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {fmtExact(displaySummary?.net_settlement ?? 0)}
+                            </p>
+                            <p className="text-[10px] text-slate-500 mt-1">
+                                Gross: {fmtExact(displaySummary?.gross_revenue ?? 0)} &middot; {displaySummary?.total_units ?? 0} units
+                            </p>
+                        </div>
                     </div>
                 </div>
             )}
 
-            {/* ── Lifecycle Overview Cards ── */}
-            {lifecycle && (
-                <>
-                    {/* Finalized Till Date — Hero Card */}
-                    {lifecycle.finalized_till_date && (
-                        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-5 flex items-center justify-between">
-                            <div className="flex items-center gap-4">
-                                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center">
-                                    <Shield size={20} className="text-emerald-400" />
+            {/* ── Quick Stats Bar ── */}
+            {displaySummary && displaySummary.total_orders > 0 && (
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                    {[
+                        { label: 'Orders', value: displaySummary.total_orders.toLocaleString('en-IN'), sub: `${displaySummary.total_units} units`, color: 'text-white', icon: Package },
+                        { label: 'Gross Revenue', value: fmt(displaySummary.gross_revenue), sub: 'Product Sales + Shipping', color: 'text-emerald-400', icon: IndianRupee },
+                        { label: 'Total Fees', value: fmt(displaySummary.total_amazon_fees + displaySummary.total_other_charges), sub: `${displaySummary.gross_revenue > 0 ? ((displaySummary.total_amazon_fees + displaySummary.total_other_charges) / displaySummary.gross_revenue * 100).toFixed(1) : '0'}% of gross`, color: 'text-red-400', icon: TrendingDown },
+                        { label: 'Total Taxes', value: fmt(displaySummary.total_taxes), sub: `GST + TCS + TDS`, color: 'text-orange-400', icon: IndianRupee },
+                        { label: 'Refund Impact', value: fmt(displaySummary.total_refund_impact), sub: `${displaySummary.returned_orders} returns`, color: 'text-amber-400', icon: RotateCcw },
+                    ].map(card => {
+                        const Icon = card.icon;
+                        return (
+                            <div key={card.label} className="bg-[#111827]/80 border border-white/[0.06] rounded-xl p-4">
+                                <div className="flex items-center gap-1.5 mb-2">
+                                    <Icon size={12} className="text-slate-500" />
+                                    <p className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">{card.label}</p>
                                 </div>
-                                <div>
-                                    <p className="text-[10px] font-medium text-emerald-500 uppercase tracking-wider">Payments Finalized Till</p>
-                                    <p className="text-xl font-bold text-emerald-400">
-                                        {new Date(lifecycle.finalized_till_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
-                                    </p>
-                                    <p className="text-[10px] text-slate-500 mt-0.5">
-                                        {lifecycle.finalized_order_count} orders &middot; Revenue till this date is solid &amp; final
-                                    </p>
-                                </div>
+                                <p className={`text-xl font-bold ${card.color}`}>{card.value}</p>
+                                <p className="text-[9px] text-slate-600 mt-0.5">{card.sub}</p>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <div className="text-right">
-                                    <p className="text-[10px] text-slate-500">Finalized Revenue</p>
-                                    <p className="text-lg font-bold text-emerald-400">
-                                        ₹{lifecycle.finalized_revenue.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
-                                    </p>
-                                </div>
-                                <Link
-                                    href="/command-center/financial-status/finalized"
-                                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-emerald-500/15 border border-emerald-500/25 rounded-lg text-emerald-400 hover:bg-emerald-500/25 transition whitespace-nowrap"
-                                >
-                                    <Lock size={13} />
-                                    Solid Figures
-                                </Link>
-                                <Link
-                                    href="/command-center/financial-status/blockers"
-                                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium bg-amber-500/15 border border-amber-500/25 rounded-lg text-amber-400 hover:bg-amber-500/25 transition whitespace-nowrap"
-                                >
-                                    <Eye size={13} />
-                                    Blockers
-                                </Link>
-                            </div>
-                        </div>
-                    )}
-                    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
-                        {[
-                            { label: 'Total Orders', value: lifecycle.total_orders, color: 'text-white', icon: Package, sub: `${lifecycle.settlement_rate}% settled` },
-                            { label: 'Open', value: lifecycle.OPEN, color: 'text-slate-400', icon: Unlock, sub: 'No financial events' },
-                            { label: 'Pending Settlement', value: lifecycle.DELIVERED_PENDING_SETTLEMENT, color: 'text-amber-400', icon: Clock, sub: 'Awaiting disbursement' },
-                            { label: 'Financially Closed', value: lifecycle.FINANCIALLY_CLOSED, color: 'text-emerald-400', icon: Lock, sub: 'Settled & disbursed' },
-                            { label: 'Closure Rate', value: lifecycle.closure_rate, color: lifecycle.closure_rate > 50 ? 'text-emerald-400' : 'text-amber-400', icon: CheckCircle2, sub: 'Of all orders', isPercent: true },
-                        ].map(card => {
-                            const Icon = card.icon;
-                            return (
-                                <div key={card.label} className="bg-[#111827]/80 border border-white/[0.06] rounded-xl p-4">
-                                    <div className="flex items-center gap-1.5 mb-2">
-                                        <Icon size={12} className="text-slate-500" />
-                                        <p className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">{card.label}</p>
-                                    </div>
-                                    <p className={`text-xl font-bold ${card.color}`}>
-                                        {(card as any).isPercent ? `${card.value}%` : card.value.toLocaleString('en-IN')}
-                                    </p>
-                                    <p className="text-[9px] text-slate-600 mt-0.5">{card.sub}</p>
-                                </div>
-                            );
-                        })}
-                    </div>
-                </>
+                        );
+                    })}
+                </div>
             )}
 
-            {/* ── Settled Orders Summary: Fees / Taxes / Refunds / Net ── */}
-            {summary && summary.total_orders > 0 && (
+            {/* ── 4 Detail Cards: Revenue, Fees, Taxes, Returns ── */}
+            {displaySummary && displaySummary.total_orders > 0 && (
                 <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
                     {/* Revenue & Net */}
                     <div className="bg-[#111827]/80 border border-white/[0.06] rounded-xl p-5">
@@ -547,9 +415,9 @@ export default function FinancialStatusPage() {
                         </h3>
                         <div className="space-y-2.5">
                             {[
-                                { label: 'Product Sales', value: summary.total_product_sales, color: 'text-emerald-400' },
-                                { label: 'Shipping Credits', value: summary.total_shipping_credits, color: 'text-emerald-400' },
-                                { label: 'Promotional Rebates', value: summary.total_promotional_rebates, color: 'text-amber-400' },
+                                { label: 'Product Sales', value: displaySummary.total_product_sales, color: 'text-emerald-400' },
+                                { label: 'Shipping Credits', value: displaySummary.total_shipping_credits, color: 'text-emerald-400' },
+                                { label: 'Promotional Rebates', value: displaySummary.total_promotional_rebates, color: 'text-amber-400' },
                             ].filter(f => f.value !== 0).map(f => (
                                 <div key={f.label} className="flex items-center justify-between">
                                     <span className="text-[11px] text-slate-400">{f.label}</span>
@@ -559,18 +427,18 @@ export default function FinancialStatusPage() {
                             <div className="border-t border-white/5 pt-2">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-semibold text-white">Gross Revenue</span>
-                                    <span className="text-sm font-bold text-emerald-400">{fmtExact(summary.gross_revenue)}</span>
+                                    <span className="text-sm font-bold text-emerald-400">{fmtExact(displaySummary.gross_revenue)}</span>
                                 </div>
                             </div>
                             <div className="border-t border-white/10 pt-3 mt-2">
                                 <div className="flex items-center justify-between">
                                     <span className="text-xs font-bold text-white">Net Settlement</span>
-                                    <span className={`text-lg font-bold ${summary.net_settlement >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                        {fmtExact(summary.net_settlement)}
+                                    <span className={`text-lg font-bold ${displaySummary.net_settlement >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                        {fmtExact(displaySummary.net_settlement)}
                                     </span>
                                 </div>
                                 <p className="text-[9px] text-slate-600 mt-0.5 text-right">
-                                    {summary.total_orders} orders · {summary.total_units} units
+                                    {displaySummary.total_orders} orders · {displaySummary.total_units} units
                                 </p>
                             </div>
                         </div>
@@ -584,18 +452,18 @@ export default function FinancialStatusPage() {
                         </h3>
                         <div className="space-y-2">
                             {[
-                                { label: 'Referral Fees', value: summary.total_referral_fees },
-                                { label: 'Closing Fees', value: summary.total_closing_fees },
-                                { label: 'FBA Fees', value: summary.total_fba_fees },
-                                { label: 'Easy Ship Fees', value: summary.total_easy_ship_fees },
-                                { label: 'Weight Handling', value: summary.total_weight_handling },
-                                { label: 'Technology Fees', value: summary.total_technology_fees },
-                                { label: 'Shipping Chargeback', value: summary.total_shipping_chargeback },
-                                { label: 'Storage Fees', value: summary.total_storage_fees },
-                                { label: 'Adjustment Fees', value: summary.total_adjustment_fees },
-                                { label: 'Other Fees', value: summary.total_other_fees },
+                                { label: 'Referral Fees', value: displaySummary.total_referral_fees },
+                                { label: 'Closing Fees', value: displaySummary.total_closing_fees },
+                                { label: 'FBA Fees', value: displaySummary.total_fba_fees },
+                                { label: 'Easy Ship Fees', value: displaySummary.total_easy_ship_fees },
+                                { label: 'Weight Handling', value: displaySummary.total_weight_handling },
+                                { label: 'Technology Fees', value: displaySummary.total_technology_fees },
+                                { label: 'Shipping Chargeback', value: displaySummary.total_shipping_chargeback },
+                                { label: 'Storage Fees', value: displaySummary.total_storage_fees },
+                                { label: 'Adjustment Fees', value: displaySummary.total_adjustment_fees },
+                                { label: 'Other Fees', value: displaySummary.total_other_fees },
                             ].filter(f => f.value > 0).map(fee => {
-                                const pct = summary.gross_revenue > 0 ? (fee.value / summary.gross_revenue * 100) : 0;
+                                const pct = displaySummary.gross_revenue > 0 ? (fee.value / displaySummary.gross_revenue * 100) : 0;
                                 return (
                                     <div key={fee.label}>
                                         <div className="flex items-center justify-between">
@@ -615,7 +483,7 @@ export default function FinancialStatusPage() {
                                 <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-semibold text-white">Total Fees</span>
                                     <span className="text-sm font-bold text-red-400">
-                                        {fmtExact(summary.total_amazon_fees + summary.total_other_charges)}
+                                        {fmtExact(displaySummary.total_amazon_fees + displaySummary.total_other_charges)}
                                     </span>
                                 </div>
                             </div>
@@ -630,9 +498,9 @@ export default function FinancialStatusPage() {
                         </h3>
                         <div className="space-y-3">
                             {[
-                                { label: 'GST', value: summary.total_gst, desc: 'Goods & Services Tax' },
-                                { label: 'TCS', value: summary.total_tcs, desc: 'Tax Collected at Source' },
-                                { label: 'TDS', value: summary.total_tds, desc: 'Tax Deducted at Source' },
+                                { label: 'GST', value: displaySummary.total_gst, desc: 'Goods & Services Tax' },
+                                { label: 'TCS', value: displaySummary.total_tcs, desc: 'Tax Collected at Source' },
+                                { label: 'TDS', value: displaySummary.total_tds, desc: 'Tax Deducted at Source' },
                             ].map(tax => (
                                 <div key={tax.label}>
                                     <div className="flex items-center justify-between">
@@ -647,11 +515,11 @@ export default function FinancialStatusPage() {
                             <div className="border-t border-white/5 pt-2">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-semibold text-white">Total Taxes</span>
-                                    <span className="text-sm font-bold text-orange-400">{fmtExact(summary.total_taxes)}</span>
+                                    <span className="text-sm font-bold text-orange-400">{fmtExact(displaySummary.total_taxes)}</span>
                                 </div>
-                                {summary.gross_revenue > 0 && (
+                                {displaySummary.gross_revenue > 0 && (
                                     <p className="text-[9px] text-slate-600 mt-0.5 text-right">
-                                        {(summary.total_taxes / summary.gross_revenue * 100).toFixed(1)}% of gross revenue
+                                        {(displaySummary.total_taxes / displaySummary.gross_revenue * 100).toFixed(1)}% of gross revenue
                                     </p>
                                 )}
                             </div>
@@ -667,36 +535,36 @@ export default function FinancialStatusPage() {
                         <div className="space-y-2.5">
                             <div className="flex items-center justify-between">
                                 <span className="text-[11px] text-slate-400">Returned Orders</span>
-                                <span className="text-[11px] font-medium text-amber-400">{summary.returned_orders}</span>
+                                <span className="text-[11px] font-medium text-amber-400">{displaySummary.returned_orders}</span>
                             </div>
                             <div className="flex items-center justify-between">
                                 <span className="text-[11px] text-slate-400">RTOs</span>
-                                <span className="text-[11px] font-medium text-red-400">{summary.rto_orders}</span>
+                                <span className="text-[11px] font-medium text-red-400">{displaySummary.rto_orders}</span>
                             </div>
                             <div className="flex items-center justify-between">
                                 <span className="text-[11px] text-slate-400">Customer Returns</span>
-                                <span className="text-[11px] font-medium text-amber-400">{summary.customer_returns}</span>
+                                <span className="text-[11px] font-medium text-amber-400">{displaySummary.customer_returns}</span>
                             </div>
                             <div className="flex items-center justify-between">
                                 <span className="text-[11px] text-slate-400">Refund Amount</span>
-                                <span className="text-[11px] font-medium text-amber-400 tabular-nums">{fmtExact(summary.total_refund_amount)}</span>
+                                <span className="text-[11px] font-medium text-amber-400 tabular-nums">{fmtExact(displaySummary.total_refund_amount)}</span>
                             </div>
                             <div className="border-t border-white/5 pt-2">
                                 <div className="flex items-center justify-between">
                                     <span className="text-[11px] font-semibold text-white">Total Refund Impact</span>
-                                    <span className="text-sm font-bold text-amber-400">{fmtExact(summary.total_refund_impact)}</span>
+                                    <span className="text-sm font-bold text-amber-400">{fmtExact(displaySummary.total_refund_impact)}</span>
                                 </div>
-                                {summary.total_orders > 0 && (
+                                {displaySummary.total_orders > 0 && (
                                     <p className="text-[9px] text-slate-600 mt-0.5 text-right">
-                                        Return rate: {(summary.returned_orders / summary.total_orders * 100).toFixed(1)}%
+                                        Return rate: {(displaySummary.returned_orders / displaySummary.total_orders * 100).toFixed(1)}%
                                     </p>
                                 )}
                             </div>
-                            {summary.total_ad_spend > 0 && (
+                            {displaySummary.total_ad_spend > 0 && (
                                 <div className="border-t border-white/5 pt-2">
                                     <div className="flex items-center justify-between">
                                         <span className="text-[11px] text-slate-400">Ad Spend</span>
-                                        <span className="text-[11px] font-medium text-violet-400 tabular-nums">{fmtExact(summary.total_ad_spend)}</span>
+                                        <span className="text-[11px] font-medium text-violet-400 tabular-nums">{fmtExact(displaySummary.total_ad_spend)}</span>
                                     </div>
                                 </div>
                             )}
@@ -705,107 +573,79 @@ export default function FinancialStatusPage() {
                 </div>
             )}
 
-            {/* ── Settled Net Formula Box ── */}
-            {summary && summary.total_orders > 0 && (
-                <div className="bg-[#111827]/80 border border-white/[0.06] rounded-xl p-5">
-                    <h3 className="text-xs font-semibold text-white mb-3">
-                        Revenue Breakdown {statusFilter === 'FINANCIALLY_CLOSED' ? '(Closed Orders — Solid Figures)' : '(Settled Orders — May Change)'}
+            {/* ── Revenue Breakdown Formula ── */}
+            {displaySummary && displaySummary.total_orders > 0 && (
+                <div className="bg-[#111827]/80 border border-emerald-500/10 rounded-xl p-5">
+                    <h3 className="text-xs font-semibold text-white mb-3 flex items-center gap-2">
+                        <Lock size={12} className="text-emerald-400" />
+                        Revenue Breakdown (Finalized — Solid Figures)
                     </h3>
-                    <div className="bg-white/[0.02] border border-white/5 rounded-xl p-4 font-mono text-[11px] space-y-1">
+                    <div className="bg-white/[0.02] border border-emerald-500/10 rounded-xl p-4 font-mono text-[11px] space-y-1">
                         <div className="flex justify-between">
                             <span className="text-emerald-400">  Gross Revenue</span>
-                            <span className="text-emerald-400 font-semibold">{fmtExact(summary.gross_revenue)}</span>
+                            <span className="text-emerald-400 font-semibold">{fmtExact(displaySummary.gross_revenue)}</span>
                         </div>
                         <div className="flex justify-between">
                             <span className="text-red-400">- Amazon Fees</span>
-                            <span className="text-red-400">{fmtExact(summary.total_amazon_fees)}</span>
+                            <span className="text-red-400">{fmtExact(displaySummary.total_amazon_fees)}</span>
                         </div>
                         <div className="flex justify-between">
                             <span className="text-red-400">- Other Charges</span>
-                            <span className="text-red-400">{fmtExact(summary.total_other_charges)}</span>
+                            <span className="text-red-400">{fmtExact(displaySummary.total_other_charges)}</span>
                         </div>
                         <div className="flex justify-between">
                             <span className="text-orange-400">- Taxes</span>
-                            <span className="text-orange-400">{fmtExact(summary.total_taxes)}</span>
+                            <span className="text-orange-400">{fmtExact(displaySummary.total_taxes)}</span>
                         </div>
-                        {summary.total_refund_impact > 0 && (
+                        {displaySummary.total_refund_impact > 0 && (
                             <div className="flex justify-between">
                                 <span className="text-amber-400">- Refund Impact</span>
-                                <span className="text-amber-400">{fmtExact(summary.total_refund_impact)}</span>
+                                <span className="text-amber-400">{fmtExact(displaySummary.total_refund_impact)}</span>
                             </div>
                         )}
-                        {summary.total_ad_spend > 0 && (
+                        {displaySummary.total_ad_spend > 0 && (
                             <div className="flex justify-between">
                                 <span className="text-violet-400">- Ad Spend</span>
-                                <span className="text-violet-400">{fmtExact(summary.total_ad_spend)}</span>
+                                <span className="text-violet-400">{fmtExact(displaySummary.total_ad_spend)}</span>
                             </div>
                         )}
-                        {summary.total_promotional_rebates !== 0 && (
+                        {displaySummary.total_promotional_rebates !== 0 && (
                             <div className="flex justify-between">
                                 <span className="text-amber-400">+ Promotions</span>
-                                <span className="text-amber-400">{fmtExact(summary.total_promotional_rebates)}</span>
+                                <span className="text-amber-400">{fmtExact(displaySummary.total_promotional_rebates)}</span>
                             </div>
                         )}
-                        <div className="border-t border-white/10 pt-2 mt-2 flex justify-between items-center">
-                            <span className={`font-bold text-sm ${summary.net_settlement >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        <div className="border-t border-emerald-500/20 pt-2 mt-2 flex justify-between items-center">
+                            <span className={`font-bold text-sm ${displaySummary.net_settlement >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                                 = Net Settlement
                             </span>
-                            <span className={`font-bold text-lg ${summary.net_settlement >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                {fmtExact(summary.net_settlement)}
+                            <span className={`font-bold text-lg ${displaySummary.net_settlement >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {fmtExact(displaySummary.net_settlement)}
                             </span>
                         </div>
                     </div>
-                    <p className={`text-[9px] mt-2 text-center ${statusFilter === 'FINANCIALLY_CLOSED' ? 'text-emerald-600' : 'text-amber-600'}`}>
-                        {statusFilter === 'FINANCIALLY_CLOSED'
-                            ? '🔒 These figures are FINAL — all settlements closed and disbursed. Your solid revenue.'
-                            : '⚠ These figures may still change — orders are awaiting settlement closure or disbursement.'}
+                    <p className="text-[9px] mt-2 text-center text-emerald-600">
+                        🔒 These figures are FINAL — all settlements closed and disbursed. Your solid revenue till {finalizedDateFormatted}.
                     </p>
                 </div>
             )}
 
-            {/* ── Status Filter Tabs ── */}
-            <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl p-0.5 flex-1">
-                    {STATUS_TABS.map(tab => {
-                        const Icon = tab.icon;
-                        const count = lifecycle
-                            ? tab.key === 'all'
-                                ? (lifecycle.DELIVERED_PENDING_SETTLEMENT + lifecycle.FINANCIALLY_CLOSED)
-                                : lifecycle[tab.key as keyof LifecycleData] as number
-                            : 0;
-                        return (
-                            <button key={tab.key}
-                                onClick={() => { setStatusFilter(tab.key); setCurrentPage(1); }}
-                                className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg transition-all ${statusFilter === tab.key
-                                    ? 'bg-emerald-500/20 text-emerald-400 shadow-sm'
-                                    : 'text-slate-400 hover:text-white hover:bg-white/5'
-                                    }`}>
-                                <Icon size={12} />
-                                {tab.label}
-                                <span className="text-[9px] text-slate-600 ml-1">({count})</span>
-                            </button>
-                        );
-                    })}
-                </div>
-
-                {/* Search */}
-                <div className="relative">
-                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-                    <input type="text" value={search}
-                        onChange={e => { setSearch(e.target.value); setCurrentPage(1); }}
-                        placeholder="Search order ID or SKU..."
-                        className="pl-9 pr-4 py-2 w-[240px] bg-white/5 border border-white/10 rounded-xl text-xs text-slate-300 placeholder-slate-600 focus:outline-none focus:border-emerald-500/30 transition-colors" />
-                </div>
-            </div>
-
-            {/* ── Warning Banner for non-closed tabs ── */}
-            {statusFilter !== 'FINANCIALLY_CLOSED' && !loading && records.length > 0 && (
-                <div className="flex items-center gap-2 p-3 rounded-xl text-xs font-medium bg-amber-500/10 border border-amber-500/20 text-amber-400">
-                    <AlertTriangle size={14} className="shrink-0" />
-                    <div>
-                        <span className="font-semibold">⚠ These figures may still change.</span>
-                        {' '}Orders in &quot;{statusFilter === 'all' ? 'All Settled' : 'Pending Settlement'}&quot; are still awaiting settlement closure or disbursement.
-                        Switch to <button onClick={() => { setStatusFilter('FINANCIALLY_CLOSED'); setCurrentPage(1); }} className="underline font-bold text-emerald-400 hover:text-emerald-300">🔒 Financially Closed</button> for solid, immutable figures.
+            {/* ── Search Bar + Count ── */}
+            {!loading && records.length > 0 && (
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 text-xs text-slate-400">
+                            <CheckCircle2 size={14} className="text-emerald-400" />
+                            <span className="text-emerald-400 font-semibold">{pagination?.totalRecords || records.length}</span>
+                            <span>finalized order items</span>
+                        </div>
+                    </div>
+                    <div className="relative">
+                        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                        <input type="text" value={search}
+                            onChange={e => { setSearch(e.target.value); setCurrentPage(1); }}
+                            placeholder="Search order ID or SKU..."
+                            className="pl-9 pr-4 py-2 w-[260px] bg-white/5 border border-white/10 rounded-xl text-xs text-slate-300 placeholder-slate-600 focus:outline-none focus:border-emerald-500/30 transition-colors" />
                     </div>
                 </div>
             )}
@@ -813,8 +653,8 @@ export default function FinancialStatusPage() {
             {/* ── Loading ── */}
             {loading && !records.length && (
                 <div className="flex items-center justify-center py-20">
-                    <Loader2 size={18} className="animate-spin text-slate-400" />
-                    <span className="text-sm text-slate-400 ml-3">Loading {statusFilter === 'FINANCIALLY_CLOSED' ? 'closed' : 'settled'} orders...</span>
+                    <Loader2 size={18} className="animate-spin text-emerald-400" />
+                    <span className="text-sm text-slate-400 ml-3">Loading finalized orders...</span>
                 </div>
             )}
 
@@ -853,7 +693,6 @@ export default function FinancialStatusPage() {
                     <div className="max-h-[600px] overflow-y-auto">
                         {groupedRecords.map((group) => {
                             const isMultiItem = group.items.length > 1;
-                            // Order-level totals for multi-item orders
                             const orderTotal = isMultiItem ? {
                                 qty: group.items.reduce((s, r) => s + r.quantity, 0),
                                 gross: group.items.reduce((s, r) => s + r.calculations.gross_revenue, 0),
@@ -983,40 +822,24 @@ export default function FinancialStatusPage() {
             {!loading && records.length === 0 && !error && (
                 <div className="flex flex-col items-center justify-center py-16 text-center">
                     <Lock size={48} className="text-slate-700 mb-4" />
-                    <h2 className="text-lg font-semibold text-white mb-2">
-                        {search ? 'No Matching Orders' : 'No Closed Orders in This Period'}
-                    </h2>
+                    <h2 className="text-lg font-semibold text-white mb-2">No Finalized Orders Yet</h2>
                     <p className="text-sm text-slate-500 mb-5 max-w-md">
                         {search
-                            ? 'No orders match your search. Try a different order ID or SKU.'
-                            : statusFilter === 'FINANCIALLY_CLOSED'
-                                ? isAllTime
-                                    ? 'No orders have been financially closed yet. Run detection to close eligible orders.'
-                                    : 'No closed orders in this date range. Try clearing the date filter.'
-                                : 'No orders found with this status for the selected range.'}
+                            ? 'No finalized orders match your search. Try a different order ID or SKU.'
+                            : 'No orders have been fully finalized yet. The finalized-till date requires all orders on a given day to be financially closed.'}
                     </p>
-                    <div className="flex items-center gap-3">
-                        {statusFilter === 'FINANCIALLY_CLOSED' && !isAllTime && (
-                            <button onClick={() => { setStartDate(''); setEndDate(''); setCurrentPage(1); }}
-                                className="flex items-center gap-2 px-4 py-2.5 bg-white/5 border border-white/10 text-slate-300 text-sm font-medium rounded-xl hover:bg-white/10 transition-all">
-                                <Calendar size={14} />
-                                Show All Time
-                            </button>
-                        )}
-                        <button onClick={handleDetect} disabled={detecting}
-                            className="flex items-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium rounded-xl transition-all disabled:opacity-50">
-                            {detecting ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-                            Run Detection
-                        </button>
-                    </div>
+                    <Link href="/command-center/financial-status"
+                        className="flex items-center gap-2 px-4 py-2.5 bg-white/5 border border-white/10 text-slate-300 text-sm font-medium rounded-xl hover:bg-white/10 transition-all">
+                        <ArrowLeft size={14} />
+                        Back to Financial Status
+                    </Link>
                 </div>
             )}
 
             {/* Footer */}
             <div className="text-center py-4 border-t border-white/5">
                 <p className="text-xs text-slate-600">
-                    Financial Status · Closed Order Detection · DeliveryDate + 30 days + No Refund = Closed ·
-                    Your solid, final revenue figures
+                    🔒 Solid Figures · Orders finalized till {finalizedDateFormatted} · All settlements closed &amp; disbursed
                 </p>
             </div>
         </DashboardLayout>
