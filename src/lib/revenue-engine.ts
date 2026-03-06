@@ -301,10 +301,21 @@ export function calculateRevenue(input: EngineInput): EngineOutput {
           rec.shipping_credits += amount;
         } else if (classifyKey.includes('giftwrap') || classifyKey.includes('gift_wrap')) {
           rec.gift_wrap_credits += amount;
+        } else if (classifyKey.includes('taxonpromotion') || classifyKey.includes('taxpromotion') || classifyKey.includes('promotiontax')) {
+          // GST credit on the promotional discount (e.g. "TaxOnPromotion" −0.56).
+          // This reduces GST liability — NOT a seller-facing promo discount.
+          rec.gst += amount; // negative amount reduces net GST → 5.56 + (−0.56) = 5.00
         } else if (classifyKey.includes('promotion') || classifyKey.includes('discount')) {
           rec.promotional_rebates += amount; // Already negative from Amazon
+        } else if (
+          // TCS must be checked BEFORE the generic gst/igst/tax check —
+          // otherwise 'tcs-igst' matches includes('igst') and ends up in the GST bucket.
+          classifyKey.includes('tcs-cgst') || classifyKey.includes('tcs-sgst') || classifyKey.includes('tcs-igst') ||
+          classifyKey.includes('tcs_cgst') || classifyKey.includes('tcs_sgst') || classifyKey.includes('tcs_igst')
+        ) {
+          rec.tcs += absAmount; // TCS deducted by Amazon (stored as absolute, subtracted in net calc)
         } else if (classifyKey.includes('tax') || classifyKey.includes('gst') || classifyKey.includes('igst')) {
-          rec.gst += amount;
+          rec.gst += amount; // GST collected from buyer (positive amount, subtracted in net calc)
         } else {
           // Default: treat as product sales if positive, promo if negative
           if (amount >= 0) {
@@ -530,11 +541,15 @@ export function calculateRevenue(input: EngineInput): EngineOutput {
   const records: OrderRevenueRecord[] = [];
 
   for (const raw of ledger.values()) {
-    // Ensure negative values don't go below 0 for fees
+    // GST is stored as the positive amount collected from buyer (it's a deduction from seller net).
+    // TCS and TDS are stored as absolute values (already deducted by Amazon).
     const gst = round2(Math.max(0, raw.gst));
-    const tcs = round2(raw.tcs);
-    const tds = round2(raw.tds);
+    const tcs = round2(Math.abs(raw.tcs)); // Ensure positive (deducted from net)
+    const tds = round2(Math.abs(raw.tds)); // Ensure positive (deducted from net)
+    // totalTaxes for display = full tax picture (GST + TCS + TDS)
     const totalTaxes = round2(gst + tcs + tds);
+    // Amazon only withholds TCS + TDS from the settlement; GST is passed through to the seller
+    const withheldTaxes = round2(tcs + tds);
 
     const amazonFeesTotal = round2(
       raw.referral_fee + raw.closing_fee + raw.fba_fee +
@@ -556,12 +571,17 @@ export function calculateRevenue(input: EngineInput): EngineOutput {
       raw.refund_amount + raw.refund_commission + raw.return_processing_fee + raw.refund_shipping
     );
 
-    // Net Settlement Amount = what the seller actually receives
+    // Net Settlement = what Amazon transfers to the seller's bank account.
+    // Formula (matching Amazon's Unified Transaction CSV):
+    //   product_sales + promotions + GST (pass-through) - TCS - TDS - selling_fees - fba_fees - closing_fee - MFNPostage - refund_impact - ad_spend
+    // GST is ADDED because Amazon collects it from the buyer and passes it to the seller
+    // (seller remits to govt separately). TCS and TDS are actually withheld by Amazon.
     const netSettlement = round2(
       grossRevenue
       + raw.promotional_rebates  // Already negative
+      + gst                      // GST is pass-through: seller receives it to pay govt
+      - withheldTaxes            // TCS + TDS only — actually withheld by Amazon
       - amazonFeesTotal
-      - totalTaxes
       - otherChargesTotal
       - totalRefundImpact
       - raw.ad_spend

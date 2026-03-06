@@ -204,7 +204,11 @@ async function syncFinancialEvents(postedAfter: string): Promise<number> {
                 }
 
                 // Item promotions (coupons, Lightning Deals, etc.)
-                for (const promo of (item.PromotionList || [])) {
+                // NOTE: Multiple promo rows can share the same PromotionId/Type but have different amounts
+                // (e.g. −18.54 main discount + −0.56 GST-on-promo adjustment). We include the amount
+                // in the reference_id so the dedup step treats them as distinct rows.
+                for (let pi = 0; pi < (item.PromotionList || []).length; pi++) {
+                    const promo = item.PromotionList[pi];
                     const amount = toAmount(promo.PromotionAmount);
                     if (amount === 0) continue;
 
@@ -218,7 +222,8 @@ async function syncFinancialEvents(postedAfter: string): Promise<number> {
                         currency: promo.PromotionAmount?.CurrencyCode || 'INR',
                         posted_date: postedDate,
                         fee_type: promo.PromotionType || 'Promotion',
-                        reference_id: `${orderId}-${sku}-promo-${promo.PromotionId || promo.PromotionType || 'unknown'}`,
+                        // Include amount AND index to uniquely identify each promo row
+                        reference_id: `${orderId}-${sku}-promo-${promo.PromotionId || promo.PromotionType || 'unknown'}-${amount}-${pi}`,
                     });
                 }
 
@@ -292,7 +297,9 @@ async function syncFinancialEvents(postedAfter: string): Promise<number> {
                 }
 
                 // Refund promotion adjustments
-                for (const promo of (item.PromotionAdjustmentList || item.PromotionList || [])) {
+                const refundPromoList = item.PromotionAdjustmentList || item.PromotionList || [];
+                for (let pi = 0; pi < refundPromoList.length; pi++) {
+                    const promo = refundPromoList[pi];
                     const amount = toAmount(promo.PromotionAmount);
                     if (amount === 0) continue;
 
@@ -306,7 +313,7 @@ async function syncFinancialEvents(postedAfter: string): Promise<number> {
                         currency: promo.PromotionAmount?.CurrencyCode || 'INR',
                         posted_date: postedDate,
                         fee_type: promo.PromotionType || 'RefundPromotion',
-                        reference_id: `${orderId}-${sku}-refundpromo-${promo.PromotionId || promo.PromotionType || 'unknown'}`,
+                        reference_id: `${orderId}-${sku}-refundpromo-${promo.PromotionId || promo.PromotionType || 'unknown'}-${amount}-${pi}`,
                     });
                 }
 
@@ -614,8 +621,9 @@ async function syncSettlements(postedAfter: string): Promise<{ groups: number; i
                                 posted_date: evt.PostedDate,
                             });
                         }
-                        // Promotions
-                        for (const promo of (item.PromotionList || [])) {
+                        // Promotions (include index so multiple promos with same type are all captured)
+                        for (let pi = 0; pi < (item.PromotionList || []).length; pi++) {
+                            const promo = item.PromotionList[pi];
                             const amount = toAmount(promo.PromotionAmount);
                             if (amount === 0) continue;
                             itemRows.push({
@@ -686,8 +694,10 @@ async function syncSettlements(postedAfter: string): Promise<{ groups: number; i
                                 posted_date: evt.PostedDate,
                             });
                         }
-                        // Refund promotion adjustments
-                        for (const promo of (item.PromotionAdjustmentList || item.PromotionList || [])) {
+                        // Refund promotion adjustments (include index for uniqueness)
+                        const settlRefundPromos = item.PromotionAdjustmentList || item.PromotionList || [];
+                        for (let pi = 0; pi < settlRefundPromos.length; pi++) {
+                            const promo = settlRefundPromos[pi];
                             const amount = toAmount(promo.PromotionAmount);
                             if (amount === 0) continue;
                             itemRows.push({
