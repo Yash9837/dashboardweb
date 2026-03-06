@@ -387,10 +387,11 @@ export async function fetchDashboardData(period: string): Promise<DashboardData>
     const skuRevenueMap = new Map<string, { revenue: number; units: number; returns: number }>();
     const currentOrderIds = currentOrders.map((o: any) => o.amazon_order_id);
 
+    const skuAsinMap = new Map<string, string>();
     if (currentOrderIds.length > 0) {
         for (let i = 0; i < currentOrderIds.length; i += 200) {
             const chunk = currentOrderIds.slice(i, i + 200);
-            const { data: items } = await supabase.from('order_items').select('amazon_order_id, sku, title, item_price, shipping_price, quantity_ordered').in('amazon_order_id', chunk);
+            const { data: items } = await supabase.from('order_items').select('amazon_order_id, sku, asin, title, item_price, shipping_price, quantity_ordered').in('amazon_order_id', chunk);
             for (const item of (items || [])) {
                 const sku = item.sku || 'UNKNOWN';
                 if (!skuRevenueMap.has(sku)) skuRevenueMap.set(sku, { revenue: 0, units: 0, returns: 0 });
@@ -398,25 +399,39 @@ export async function fetchDashboardData(period: string): Promise<DashboardData>
                 entry.revenue += (Number(item.item_price) || 0) + (Number(item.shipping_price) || 0);
                 entry.units += item.quantity_ordered || 1;
                 if (item.title && !skuNameMap.has(sku)) skuNameMap.set(sku, item.title);
+                if (item.asin && !skuAsinMap.has(sku)) skuAsinMap.set(sku, item.asin);
                 if (refundOrderIds.has(item.amazon_order_id)) entry.returns++;
             }
         }
     }
 
-    // Fetch ALL SKUs
+    // Fetch ALL SKUs from master table
     const { data: allSkusData } = await supabase.from('skus').select('sku, title, asin, status');
-    const allSkus = allSkusData || [];
-    for (const s of allSkus) {
+    const allSkusMaster = allSkusData || [];
+    const skuMasterMap = new Map<string, any>();
+    for (const s of allSkusMaster) {
+        skuMasterMap.set(s.sku, s);
         if (s.title && !skuNameMap.has(s.sku)) skuNameMap.set(s.sku, s.title);
+        if (s.asin && !skuAsinMap.has(s.sku)) skuAsinMap.set(s.sku, s.asin);
     }
 
-    const skuPerformance: SKUPerformanceItem[] = allSkus.map((s: any) => {
-        const data = skuRevenueMap.get(s.sku);
+    // Merge SKUs from ALL sources: skus table + order_items + inventory_snapshots
+    const allSkuKeys = new Set<string>([
+        ...skuMasterMap.keys(),
+        ...skuRevenueMap.keys(),
+        ...invBySku.keys(),
+    ]);
+    // Remove placeholder
+    allSkuKeys.delete('UNKNOWN');
+
+    const skuPerformance: SKUPerformanceItem[] = Array.from(allSkuKeys).map(sku => {
+        const master = skuMasterMap.get(sku);
+        const data = skuRevenueMap.get(sku);
         return {
-            sku: s.sku,
-            name: skuNameMap.get(s.sku) || s.title || 'Unknown',
-            asin: s.asin || '',
-            status: s.status || 'Active',
+            sku,
+            name: skuNameMap.get(sku) || master?.title || 'Unknown',
+            asin: skuAsinMap.get(sku) || master?.asin || '',
+            status: master?.status || 'Active',
             revenue: data ? Math.round(data.revenue) : 0,
             unitsSold: data ? data.units : 0,
             returns: data ? data.returns : 0,
