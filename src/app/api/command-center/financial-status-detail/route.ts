@@ -318,10 +318,11 @@ export async function GET(request: Request) {
     }
 
     // ── 9b. Compute "Payments Finalized Till Date" ──
+    // Query orders table DIRECTLY by purchase_date range (not from revenue engine output).
+    // This avoids phantom OPEN records from orphaned financial events.
     // Group orders by purchase_date day, walk from earliest to latest.
     // Finalized-till = the latest date where ALL orders on that date are FINANCIALLY_CLOSED
     // (or have a manual INCLUDE/EXCLUDE override).
-    // Skip NO_ORDER records (orderless events like adjustments/service fees).
 
     // Fetch manual overrides
     const { data: overridesData } = await supabase
@@ -329,32 +330,35 @@ export async function GET(request: Request) {
       .select('amazon_order_id, override_action');
     const overrideMap = new Map((overridesData || []).map((o: any) => [o.amazon_order_id, o.override_action]));
 
-    const dayOrders = new Map<string, { total: number; closed: number; revenue: number }>();
-    for (const r of allRecords) {
-      if (!r.order_date) continue;
-      if (r.order_id === 'NO_ORDER') continue;
-      const day = r.order_date.slice(0, 10);
-      if (!dayOrders.has(day)) dayOrders.set(day, { total: 0, closed: 0, revenue: 0 });
+    // Fetch orders directly from DB for the date range (lightweight query)
+    const { data: allOrdersInRange } = await supabase
+      .from('orders')
+      .select('amazon_order_id, purchase_date, financial_status')
+      .gte('purchase_date', startStr)
+      .lte('purchase_date', endStr + 'T23:59:59')
+      .order('purchase_date', { ascending: true });
+
+    const dayOrders = new Map<string, { total: number; closed: number }>();
+    for (const o of (allOrdersInRange || [])) {
+      if (!o.purchase_date) continue;
+      const day = o.purchase_date.slice(0, 10);
+      if (!dayOrders.has(day)) dayOrders.set(day, { total: 0, closed: 0 });
       const d = dayOrders.get(day)!;
 
       // Check for manual override
-      const override = overrideMap.get(r.order_id);
+      const override = overrideMap.get(o.amazon_order_id);
       if (override === 'INCLUDE' || override === 'EXCLUDE') {
-        // INCLUDE = treat as closed (user confirmed it's final)
-        // EXCLUDE = skip entirely (don't count in total or closed)
         if (override === 'INCLUDE') {
           d.total++;
           d.closed++;
-          d.revenue += r.calculations?.net_settlement || 0;
         }
         // EXCLUDE: don't add to total at all — invisible to finalized-till
         continue;
       }
 
       d.total++;
-      if ((r.financial_status || 'OPEN') === 'FINANCIALLY_CLOSED') {
+      if ((o.financial_status || 'OPEN') === 'FINANCIALLY_CLOSED') {
         d.closed++;
-        d.revenue += r.calculations?.net_settlement || 0;
       }
     }
     const sortedDays = [...dayOrders.keys()].sort();
@@ -365,17 +369,36 @@ export async function GET(request: Request) {
       const d = dayOrders.get(day)!;
       if (d.total === 0 || d.total === d.closed) {
         finalizedTillDate = day;
-        finalizedRevenue += d.revenue;
         finalizedOrderCount += d.total;
       } else {
         break;
       }
     }
 
+    // Build set of valid order IDs from DB query to exclude phantom records from orphaned events
+    const validOrderIds = new Set((allOrdersInRange || []).map(o => o.amazon_order_id));
+
+    // Recompute finalizedRevenue from revenue engine records (orders table's net_settlement_amount is unreliable)
+    if (finalizedTillDate) {
+      for (const r of allRecords) {
+        if (!r.order_date || r.order_id === 'NO_ORDER') continue;
+        if (!validOrderIds.has(r.order_id)) continue;
+        const day = r.order_date.slice(0, 10);
+        if (day > finalizedTillDate) continue;
+        const ov = overrideMap.get(r.order_id);
+        if (ov === 'EXCLUDE') continue;
+        finalizedRevenue += r.calculations?.net_settlement || 0;
+      }
+      finalizedRevenue = Math.round(finalizedRevenue * 100) / 100;
+    }
+
     // ── 9b-post. If status=finalized, post-filter records to only those on/before finalizedTillDate ──
     if (statusFilter === 'finalized' && finalizedTillDate) {
       records = records.filter(r => {
         if (!r.order_date) return false;
+        if (r.order_id === 'NO_ORDER') return false;
+        // Exclude phantom records from orphaned events
+        if (!validOrderIds.has(r.order_id)) return false;
         const day = r.order_date.slice(0, 10);
         if (day > finalizedTillDate) return false;
         // Respect EXCLUDE overrides
@@ -513,9 +536,12 @@ export async function GET(request: Request) {
     };
 
     if (finalizedTillDate) {
+
       for (const r of allRecords) {
         if (!r.order_date) continue;
         if (r.order_id === 'NO_ORDER') continue;
+        // Only include records for orders that exist in the orders table (not phantoms)
+        if (!validOrderIds.has(r.order_id)) continue;
         const day = r.order_date.slice(0, 10);
         if (day > finalizedTillDate) continue;
 
