@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
     LayoutDashboard, BarChart3, DollarSign, Zap, Package, ShoppingCart,
-    Plug, Settings, ChevronLeft, ChevronRight, Command, Calculator, Lock
+    Plug, Settings, ChevronLeft, ChevronRight, Command, Calculator, Lock, Megaphone
 } from 'lucide-react';
 
 const navItems = [
@@ -12,6 +12,7 @@ const navItems = [
     { label: 'Command Center', href: '/command-center', icon: Command },
     { label: 'Revenue Calculator', href: '/revenue-calculator', icon: Calculator },
     { label: 'Financial Status', href: '/command-center/financial-status', icon: Lock },
+    { label: 'Advertising', href: '/advertising', icon: Megaphone },
     { label: 'Analytics', href: '/analytics', icon: BarChart3 },
     { label: 'Sales & Revenue', href: '/sales', icon: DollarSign },
     { label: 'Performance', href: '/performance', icon: Zap },
