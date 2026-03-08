@@ -11,7 +11,6 @@
 
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { listCampaigns } from '@/lib/amazon-ads-client';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -105,13 +104,12 @@ export async function GET(request: Request) {
             agg.purchases += r.purchases14d || 0;
         }
 
-        // Fetch live campaign info for status/budget
-        let liveCampaigns: any[] = [];
-        try {
-            liveCampaigns = await listCampaigns();
-        } catch { /* non-critical */ }
+        // Fetch DB campaign info for status/budget
+        const { data: dbCampaigns } = await supabase
+            .from('ads_campaigns')
+            .select('*');
 
-        const liveCampMap = new Map(liveCampaigns.map((c: any) => [c.campaignId, c]));
+        const liveCampMap = new Map((dbCampaigns || []).map((c: any) => [c.campaign_id, c]));
 
         const campaigns = [...campMap.entries()]
             .map(([id, d]) => {
@@ -120,9 +118,9 @@ export async function GET(request: Request) {
                     campaignId: id,
                     name: live?.name || d.name,
                     state: live?.state || 'UNKNOWN',
-                    targetingType: live?.targetingType || '',
-                    budget: live?.budget?.budget || 0,
-                    budgetType: live?.budget?.budgetType || '',
+                    targetingType: live?.targeting_type || '',
+                    budget: parseFloat(live?.budget) || 0,
+                    budgetType: live?.budget_type || '',
                     ...computeDerived(d.impressions, d.clicks, d.cost, d.sales, d.purchases),
                 };
             })

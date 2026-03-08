@@ -269,7 +269,61 @@ async function upsertProductRows(rows) {
     return mapped.length;
 }
 
+// ─── Campaign Metadata ───────────────────────────────────────────────────────
+
+async function syncCampaignsMetadata() {
+    process.stdout.write(`📚 Fetching campaign metadata `);
+    const token = await getToken();
+    const res = await fetch(`${adsApiUrl}/sp/campaigns/list`, {
+        method: 'POST',
+        headers: {
+            ...adsHeaders(token),
+            'Accept': 'application/vnd.spCampaign.v3+json',
+            'Content-Type': 'application/vnd.spCampaign.v3+json',
+        },
+        body: JSON.stringify({}),
+    });
+
+    if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`listCampaigns failed (${res.status}): ${text}`);
+    }
+
+    const data = await res.json();
+    const campaigns = data.campaigns || [];
+
+    if (campaigns.length === 0) {
+        console.log(` ✅ 0 campaigns found`);
+        return;
+    }
+
+    const mapped = campaigns.map(c => ({
+        campaign_id: c.campaignId,
+        name: c.name || '',
+        state: c.state || 'UNKNOWN',
+        targeting_type: c.targetingType || '',
+        budget: c.budget?.budget || 0,
+        budget_type: c.budget?.budgetType || '',
+        updated_at: new Date().toISOString(),
+    }));
+
+    for (let i = 0; i < mapped.length; i += 500) {
+        const batch = mapped.slice(i, i + 500);
+        const r = await supa('ads_campaigns?on_conflict=campaign_id', {
+            method: 'POST',
+            prefer: 'return=minimal,resolution=merge-duplicates',
+            body: JSON.stringify(batch),
+        });
+        if (r.status >= 400) {
+            const t = await r.text();
+            throw new Error(`Upsert campaigns metadata failed: ${r.status} ${t}`);
+        }
+    }
+    console.log(` ✅ ${mapped.length} campaigns saved`);
+}
+
 // ─── Generate date chunks ────────────────────────────────────────────────────
+
 
 function generateChunks(startStr, endStr) {
     const chunks = [];
@@ -308,6 +362,15 @@ async function main() {
     // Test token
     await getToken();
     console.log('✅ Token OK\n');
+
+    // Sync metadata first
+    await syncCampaignsMetadata();
+    console.log('');
+
+    if (args.includes('--metadata-only')) {
+        console.log('  ✅ Metadata sync complete. Exiting (--metadata-only flag enabled)');
+        process.exit(0);
+    }
 
     const chunks = generateChunks(startDateStr, endDateStr);
     console.log(`📅 ${chunks.length} chunks to process\n`);
